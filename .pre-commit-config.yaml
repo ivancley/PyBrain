@@ -1,0 +1,51 @@
+exclude: '^\.claude/'
+
+# `make hooks` instala os dois tipos; as verificações ficam só no commit, e o
+# post-checkout cria o fragmento de changelog da branch (changelog/README.md).
+default_install_hook_types: [pre-commit, post-checkout]
+default_stages: [pre-commit]
+
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: trailing-whitespace
+      - id: end-of-file-fixer
+      - id: check-yaml
+      - id: check-added-large-files
+      - id: check-merge-conflict
+
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.15.10
+    hooks:
+      - id: ruff
+        args: [--fix]
+      - id: ruff-format
+
+  - repo: local
+    hooks:
+      - id: file-size
+        name: arquivos pequenos (CLAUDE.md, Tamanho de arquivo)
+        # python3: em macOS/Linux modernos não há `python` no PATH e o hook
+        # falharia com "Executable `python` not found" — sem verificar nada.
+        entry: python3 scripts/check_file_size.py
+        language: system
+        types: [python]
+      - id: review-indexed
+        name: revisão nova está no índice de .claude/review.md
+        entry: python3 scripts/check_review_index.py
+        language: system
+        # `always_run`: `.claude/` está no `exclude:` global, então o hook nunca
+        # receberia o índice como arquivo tocado. Ele lê a pasta diretamente.
+        always_run: true
+        pass_filenames: false
+      - id: changelog-fragment
+        name: fragmento de changelog da branch
+        entry: python3 -m scripts.changelog post-checkout
+        language: system
+        stages: [post-checkout]
+        always_run: true
+        pass_filenames: false
+        # Sem `verbose`, o pre-commit engole a saída de um hook que passa — e a
+        # saída é o "Fragmento criado: ..." que a pessoa precisa ler.
+        verbose: true

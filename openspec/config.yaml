@@ -1,0 +1,40 @@
+schema: spec-driven
+
+# Contexto mostrado ao agente ao gerar artefatos. O guia completo é o CLAUDE.md;
+# o vocabulário é docs/glossario.md.
+context: |
+  memory-lifecycle: uma biblioteca Python embutida (pip, no processo, sem serviço)
+  que dá a agentes de IA memória persistente, contextual e bitemporal sobre
+  PostgreSQL + pgvector. O núcleo tem zero dependências obrigatórias; drivers,
+  pools, adaptadores de framework (Django, SQLAlchemy) e provedores de embeddings
+  são extras opcionais. Tudo em português, com os termos de docs/glossario.md.
+  Agnóstica de domínio: o modelo conhece tenant, dono, entidade, contexto e
+  memória, todos ids opacos; o domínio do app consumidor nunca entra num artefato.
+  Dois eixos de tempo (validade: valido_de/valido_ate; registro:
+  registrado_em/substituido_em), três operações (encerrar, corrigir, substituir),
+  três modos de consulta (agora, como em, sabido em). Status é derivado, linhas
+  são imutáveis, esquecer é o único delete físico. O escopo (contextos e entidades
+  ativos) é passado pelo app em recuperar e é estrito: uma versão sem contexto só
+  entra quando o escopo inclui None; a biblioteca nunca infere escopo. Toda
+  instrução filtra tenant_id e dono_id. O app é dono da conexão (provedor DB-API;
+  transação participar ou própria). Migrações são arquivos SQL só de acréscimo.
+  A Definição de Pronto (5 itens) e as guardas estão no CLAUDE.md. Uma
+  funcionalidade nova passa pelas 4 etapas da skill software-factory, que escreve
+  estes mesmos artefatos com aprovação do usuário a cada etapa.
+
+rules:
+  proposal:
+    - Quando refinement.md (skill grill-me) existe na mudança, a proposal parte dele e não o contradiz
+    - Sem tecnologia (tabela, índice, driver, nome de arquivo) — isso pertence ao design.md
+    - A seção Why enuncia o problema nas palavras do desenvolvedor do app e um critério de sucesso observável
+    - A seção What Changes é o anúncio da funcionalidade a um usuário da biblioteca, em 3–6 frases
+    - Só o vocabulário de docs/glossario.md e do CLAUDE.md; nenhum domínio do consumidor (professor, aluno, turma)
+  specs:
+    - Cenários WHEN/THEN sem tecnologia; cobrem o caminho feliz, um erro, o isolamento por tenant e dono, e os modos de consulta que a capability toca
+  design:
+    - Ler o código existente primeiro; citar os módulos reais que a mudança toca
+    - Listar métodos públicos (assinatura + erros), tabelas/índices e as instruções que os atingem, o eixo de tempo e a operação envolvidos, o modo de transação e os NOMES das variáveis de ambiente (nunca valores)
+  tasks:
+    - Um grupo por fatia vertical, em ordem de construção; o grupo 1 é a bala traçante de ponta a ponta contra um Postgres real
+    - Nunca agrupar por camada (todo o schema, depois a escrita, depois a recuperação)
+    - Toda fatia termina fechando a Definição de Pronto do CLAUDE.md e passando make quality

@@ -1,0 +1,110 @@
+# ---------- Só local: contexto do agente e registro de planejamento ----------
+# O harness do Claude Code (skills, regras, agentes, hooks, configurações, índice
+# de revisões) e as notas de planejamento ficam na máquina. O CLAUDE.md da raiz é versionado.
+.claude/
+.data/
+
+# ---------- Segredos e qualquer coisa sensível ----------
+.env
+.env.*
+!.env.example
+.envrc
+*.pem
+*.key
+*.p12
+*.pfx
+*.crt
+*.cer
+*.jks
+*.keystore
+id_rsa*
+id_ed25519*
+*.secret
+*.secrets
+secrets.*
+credentials.*
+*credentials*.json
+service-account*.json
+.netrc
+.pypirc
+.pgpass
+*.local
+*.local.*
+!*.local.example
+
+# ---------- Python ----------
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+pip-log.txt
+pip-delete-this-directory.txt
+*.manifest
+*.spec
+
+# Ambientes
+.venv/
+venv/
+env/
+ENV/
+.python-version
+
+# Testes, cobertura, caches de tipos e lint
+.pytest_cache/
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+.tox/
+.nox/
+.hypothesis/
+.cache/
+nosetests.xml
+*.cover
+.mypy_cache/
+.dmypy.json
+dmypy.json
+.pyre/
+.pytype/
+.ruff_cache/
+cython_debug/
+
+# Notebooks, profiling, logs
+.ipynb_checkpoints/
+profile_default/
+ipython_config.py
+*.prof
+*.log
+logs/
+
+# ---------- Projeto ----------
+# Relatórios de revisão citam instruções e dados reais; o registro é .claude/review.md
+reports/*
+!reports/.gitkeep
+
+# ---------- Editores e SO ----------
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db

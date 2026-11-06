@@ -1,0 +1,51 @@
+name: Changelog
+
+# Exige que toda entrega traga seu fragmento de changelog preenchido — e que não
+# edite o CHANGELOG.md nem a versão do pyproject.toml, que só mudam em `release/*`.
+#
+# Roda em PRs para `dev` e para `main`: um `hotfix/*` vai direto para `main` e
+# também precisa de fragmento, ou entra sem registro e a próxima release o omite.
+#
+# Saídas de emergência: branches de integração (`merge/`, `release/`, `revert/`) e
+# o back-merge de `main` em si (`backmerge.yml`) não exigem fragmento, e o label
+# `no-changelog` pula o gate. Fluxo completo: changelog/README.md.
+
+on:
+  pull_request:
+    branches: [dev, main]
+    types: [opened, synchronize, reopened, labeled, unlabeled]
+
+# Privilégio mínimo, declarado em vez de herdado: o job só faz checkout e roda
+# um script de stdlib — nunca escreve.
+permissions:
+  contents: read
+
+jobs:
+  fragment:
+    if: "github.head_ref != 'main' && !contains(github.event.pull_request.labels.*.name, 'no-changelog')"
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      # Histórico inteiro: a verificação de CHANGELOG/versão compara com a base pelo merge-base.
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # Sem `pip install`: `scripts/changelog` é stdlib pura.
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # Uma branch fora da convenção passa, mas vira anotação no PR: sem isso,
+      # nomear mal a branch seria um jeito silencioso de sair do gate.
+      - name: Verificar o fragmento e que CHANGELOG/versão estão intactos
+        run: |
+          set -euo pipefail
+          output="$(python3 -m scripts.changelog check --branch "$BRANCH" --base "origin/$BASE")"
+          echo "$output"
+          case "$output" in
+            AVISO:*) echo "::warning title=Changelog::${output%%$'\n'*}" ;;
+          esac
+        env:
+          BRANCH: ${{ github.head_ref }}
+          BASE: ${{ github.base_ref }}

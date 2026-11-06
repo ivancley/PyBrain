@@ -1,0 +1,82 @@
+name: Back-merge main → dev
+
+# Fecha o ciclo de release: `release/*` consolida os fragmentos e sobe a versão
+# só no caminho para `main`. Se `main` não volta para `dev`, `dev` fica com os
+# fragmentos já lançados e a versão anterior, e a próxima release entrega os
+# mesmos itens de novo, com número repetido. Aqui o PR aparece sozinho.
+#
+# O PR é de `main` em si para `dev`, sem branch intermediária. É o que permite
+# ao GITHUB_TOKEN fazê-lo: não faz push de commit nenhum, e o PR aberto segue
+# `main` sozinho — um PR, quantas releases e hotfixes caírem antes do merge.
+#
+# Faça merge com "Create a merge commit". Squash ou rebase deixam `dev` sem os
+# commits de `main`, e este workflow abre o mesmo PR de novo no próximo push.
+#
+# Duas limitações conhecidas do GITHUB_TOKEN:
+#   - Os eventos dele não disparam workflows: a CI não roda no PR. O código dele
+#     já passou na CI do push para `main`, e o merge (por uma pessoa) dispara a
+#     CI de `dev`.
+#   - Abrir um PR exige "Allow GitHub Actions to create and approve pull
+#     requests" habilitado nas configurações do repositório. Desabilitado, o job
+#     fica vermelho no commit de `main` com o link que abre o PR em um clique.
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pull-requests: write
+
+concurrency:
+  group: backmerge-main-dev
+  cancel-in-progress: false
+
+jobs:
+  pr:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Abrir o PR main → dev, se não existir
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          git fetch origin main dev
+
+          if git merge-base --is-ancestor origin/main origin/dev; then
+            echo "dev já contém main — nada a trazer."
+            exit 0
+          fi
+
+          open="$(gh pr list --base dev --head main --state open --json url --jq '.[0].url // empty')"
+          if [ -n "$open" ]; then
+            echo "PR já aberto, e ele segue main sozinho: $open"
+            exit 0
+          fi
+
+          if ! gh pr create --base dev --head main \
+            --title "chore: back-merge main → dev" \
+            --body "Traz para \`dev\` o que caiu em \`main\` (release ou hotfix): o CHANGELOG consolidado, a versão nova e a remoção dos fragmentos lançados. Sem isso, a próxima release entrega os mesmos itens de novo.
+
+          **Faça merge com \"Create a merge commit\"** — squash ou rebase deixam \`dev\` sem os commits de \`main\`.
+
+          Aberto pelo workflow \`backmerge.yml\`; a CI não roda aqui (evento do GITHUB_TOKEN), e o código já passou na CI de \`main\`."; then
+            link="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/compare/dev...main?expand=1"
+            echo "::error title=Back-merge main → dev::Não foi possível abrir o PR (mensagem do gh acima). Abra à mão: $link"
+            {
+              echo "### Back-merge main → dev pendente"
+              echo
+              echo "\`gh pr create\` foi recusado. A causa mais provável é a configuração"
+              echo "\"Allow GitHub Actions to create and approve pull requests\""
+              echo "desabilitada no repositório."
+              echo
+              echo "**Abra o PR à mão:** $link — e faça merge com \"Create a merge commit\"."
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi

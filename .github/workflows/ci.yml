@@ -1,0 +1,93 @@
+name: CI
+
+on:
+  push:
+    branches: [main, dev]
+  pull_request:
+    branches: [main, dev]
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # Lint num job próprio, ao lado da suíte: um erro de formatação aparece em ~1 min
+  # em vez de esperar os testes, e o tempo da CI é o do job mais lento, não a soma.
+  lint:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Instalar Python
+        run: uv python install 3.12
+
+      - name: Instalar dependências
+        run: uv sync
+
+      - name: Lint com ruff
+        run: uv run ruff check .
+
+      - name: Verificar formatação com ruff
+        run: uv run ruff format --check .
+
+      - name: Arquivos pequenos (CLAUDE.md, Tamanho de arquivo)
+        run: git ls-files 'src/**/*.py' 'src/**/*.sql' 'scripts/**/*.py' | xargs --no-run-if-empty uv run python scripts/check_file_size.py
+
+      - name: Verificar tipos (mypy — só aviso até o core estar anotado)
+        run: uv run mypy
+        continue-on-error: true
+
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_DB: memory_lifecycle
+          POSTGRES_USER: memory
+          POSTGRES_PASSWORD: memory
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U memory -d memory_lifecycle"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+
+    env:
+      MEMORY_LIFECYCLE_DSN_TESTE: postgresql://memory:memory@localhost:5432/memory_lifecycle
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Instalar Python
+        run: uv python install 3.12
+
+      - name: Instalar dependências
+        run: uv sync
+
+      - name: Guardas
+        run: uv run pytest tests/guards
+
+      # `--durations` lista os 25 testes mais lentos no fim do log.
+      - name: Suíte com cobertura
+        run: uv run pytest --durations=25 --cov --cov-report=xml --cov-report=term
+
+      - name: Publicar artefato de cobertura
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-xml
+          path: coverage.xml
