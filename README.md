@@ -76,6 +76,16 @@ A biblioteca nunca abre um segundo pool: ela recebe um provedor de conexão.
 quando o app prefere configurar por ambiente. O núcleo não tem dependência
 obrigatória; cada adaptador importa a sua sob demanda.
 
+## Documentação
+
+- `docs/conceitos.md` — os dois eixos de tempo, as três operações, os três modos
+  de consulta, o escopo, o status e os erros. Os trechos rodam na suíte.
+- `docs/integracao.md` — instalação, cada provedor de conexão (com Django do
+  começo ao fim), o seu provedor de embeddings, desempenho e testes.
+- `exemplos/fluxo_do_agente.py` — recuperar, montar o contexto, responder e gravar
+  o que o agente propôs; `exemplos/django_app/` — o mesmo fluxo numa view Django.
+- `docs/architecture.md` e `docs/adr/` — as decisões e as alternativas que perderam.
+
 ## Desenvolvimento
 
 Veja `docs/development-workflow.md`. Versão curta:

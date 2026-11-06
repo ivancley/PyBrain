@@ -13,10 +13,11 @@ em `openspec/changes/archive/2026-11-06-core-memory-lifecycle/`) cobriu as Etapa
 migrações 0001–0004, os adaptadores psycopg, pool, Django e SQLAlchemy, e os
 cenários de aceitação passando com todos os provedores. As specs vivas estão em
 `openspec/specs/`; os ADRs 0001–0009 estão `aceito`; a revisão completa e o que
-ficou em aberto estão em `.claude/review.md`. Próximo: commit inicial, reserva do
-nome `memory-lifecycle` no PyPI (ainda **não reservado**) e a Etapa 8
-(documentação). Tudo é em português, com termos e identificadores em
-`docs/glossario.md`.
+ficou em aberto estão em `.claude/review.md`. A Etapa 8 (documentação) entregou
+`docs/conceitos.md`, `docs/integracao.md` e `exemplos/`, todos executados pela
+suíte. Próximo: Etapa 9 (lançamento), começando por reservar o nome
+`memory-lifecycle` no PyPI (ainda **não reservado**). Tudo é em português, com
+termos e identificadores em `docs/glossario.md`.
 
 ## Vocabulário
 
@@ -90,6 +91,7 @@ src/memory_lifecycle/
 tests/              conftest (Postgres via MEMORY_LIFECYCLE_DSN_TESTE, ProvedorDeEmbeddingsFalso)
   guards/  propriedades do repositório   acceptance/  cenários (todo provedor)
   unit/    sem banco                     integration/ contra o Postgres
+exemplos/          fluxo com agente e app Django — rodam em tests/integration/test_exemplos.py
 scripts/            ferramentas: changelog, checagens, hooks — nada em tempo de execução
 docs/adr/           decisões          openspec/   specs e mudanças
 changelog/          fragmentos        reports/    relatórios de revisão (gitignored)
