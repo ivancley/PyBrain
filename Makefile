@@ -1,4 +1,4 @@
-.PHONY: help install db-up db-down db-reset psql test test-cov lint format guards quality hooks changelog changelog-check
+.PHONY: help install db-up db-down db-reset psql test test-cov lint format guards quality hooks changelog changelog-check chat
 
 COMPOSE := docker compose
 # Também definida em .env.example; a suíte pula com motivo visível quando ela não está definida.
@@ -63,3 +63,7 @@ changelog: ## Consolida changelog/unreleased/ em CHANGELOG.md (feito automaticam
 
 changelog-check: ## Valida o fragmento de changelog da branch atual (o que a CI exige)
 	@python3 -m scripts.changelog check
+
+PORTA_CHAT ?= 8010
+chat: ## App de teste: chat Django com o agente bem-humorado (app_de_teste/README.md)
+	uv run python app_de_teste/manage.py runserver 127.0.0.1:$(PORTA_CHAT)
