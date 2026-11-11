@@ -72,23 +72,23 @@ def completar(
 
 
 class ProvedorDeEmbeddingsOpenRouter:
-    """Embeddings pelo endpoint ``/embeddings`` do OpenRouter; cumpre ``ProvedorDeEmbeddings``."""
+    """Embeddings pelo endpoint ``/embeddings`` do OpenRouter; cumpre ``EmbeddingProvider``."""
 
     def __init__(self, modelo: str, dimensao: int) -> None:
         self._modelo = modelo
         self._dimensao = dimensao
 
     @property
-    def dimensao(self) -> int:
+    def dimension(self) -> int:
         """Largura declarada no .env; a biblioteca confere cada vetor contra ela."""
         return self._dimensao
 
     @property
-    def nome_do_modelo(self) -> str:
+    def model_name(self) -> str:
         """Gravado em cada versão escrita com este provedor."""
         return self._modelo
 
-    def gerar(self, textos: Sequence[str]) -> list[list[float]]:
+    def embed(self, textos: Sequence[str]) -> list[list[float]]:
         """Um vetor por texto, na mesma ordem (a API devolve ``index`` em cada item)."""
         dados = _postar("embeddings", {"model": self._modelo, "input": list(textos)})
         itens = sorted(dados.get("data", []), key=lambda item: item.get("index", 0))

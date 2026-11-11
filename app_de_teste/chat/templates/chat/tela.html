@@ -38,6 +38,13 @@
   .evento { font-size: 12px; padding: 2px 8px; border-radius: 999px; border: 1px solid currentColor; }
   .evento.lembrar { color: var(--ok); } .evento.substituir, .evento.corrigir { color: var(--info); }
   .evento.encerrar, .evento.ignorada { color: var(--aviso); } .evento.erro { color: var(--erro); }
+  .aviso { margin: 12px 16px 0; padding: 10px 14px; border-radius: 10px; font-size: 13.5px;
+           border: 1px dashed var(--acento); color: var(--texto); background: var(--cartao); }
+  .aviso b { color: var(--acento); }
+  details.usadas { margin-top: 8px; font-size: 12.5px; color: var(--suave); }
+  details.usadas summary { cursor: pointer; }
+  details.usadas ul { margin: 6px 0 0; padding-left: 18px; }
+  details.usadas .cat { text-transform: uppercase; font-size: 10.5px; letter-spacing: .04em; color: var(--acento); }
   form { display: flex; gap: 8px; padding: 12px 16px; border-top: 1px solid var(--borda); background: var(--cartao); }
   input, select, button { font: inherit; color: inherit; }
   #pergunta { flex: 1; padding: 10px 12px; border-radius: 10px; border: 1px solid var(--borda); background: var(--fundo); }
@@ -72,6 +79,10 @@
 </header>
 <main>
   <section id="chat">
+    <p class="aviso"><b>🔬 Este chat testa a memória de longo prazo (memory-lifecycle), não o LLM.</b>
+      O Brainiac não recebe as mensagens anteriores desta conversa: a cada envio, ele vê só o que você
+      acabou de escrever e as memórias guardadas no banco sobre a pessoa selecionada. A conversa na tela
+      é só para você acompanhar. Embaixo de cada resposta, "memórias usadas" mostra exatamente o que ele recebeu.</p>
     <div id="mensagens"></div>
     <form id="formulario">
       <input id="pergunta" autocomplete="off" placeholder="Pergunte ou conte algo sobre você…" autofocus>
@@ -120,8 +131,24 @@
     return el;
   }
 
-  function balao(texto, classe, eventos) {
+  function balao(texto, classe, eventos, lembradas) {
     const el = elemento("div", "balao " + (classe || ""), texto);
+    if (lembradas) {
+      const caixa = elemento("details", "usadas");
+      caixa.appendChild(elemento("summary", "", "🧠 memórias usadas nesta resposta (" + lembradas.length + ")"));
+      if (lembradas.length) {
+        const lista = elemento("ul");
+        for (const m of lembradas) {
+          const item = elemento("li");
+          item.append(elemento("span", "cat", m.categoria + " "), document.createTextNode(m.texto));
+          lista.appendChild(item);
+        }
+        caixa.appendChild(lista);
+      } else {
+        caixa.appendChild(elemento("div", "", "Nenhuma: o banco não tinha memória desta pessoa."));
+      }
+      el.appendChild(caixa);
+    }
     if (eventos && eventos.length) {
       const caixa = elemento("div", "eventos");
       for (const ev of eventos) caixa.appendChild(elemento("span", "evento " + ev.tipo, ev.tipo + ": " + ev.texto));
@@ -135,7 +162,7 @@
   function mostrarConversa() {
     $("mensagens").replaceChildren();
     balao(BOAS_VINDAS);
-    for (const m of conversa) balao(m.texto, m.papel === "usuario" ? "usuario" : "", m.eventos);
+    for (const m of conversa) balao(m.texto, m.papel === "usuario" ? "usuario" : "", m.eventos, m.lembradas);
     $("nome-pessoa").textContent = $("pessoa").selectedOptions[0].textContent;
     $("dono").textContent = dono;
   }
@@ -168,11 +195,11 @@
     balao(pergunta, "usuario");
     const pensando = balao("O Brainiac está pensando numa piada…", "pensando");
     try {
-      const historico = conversa.map((m) => ({ papel: m.papel, texto: m.texto }));
-      const dados = await postar("/api/mensagem", { pergunta, historico });
+      // Só a mensagem atual vai ao servidor: o LLM não recebe a conversa anterior.
+      const dados = await postar("/api/mensagem", { pergunta });
       pensando.remove();
-      balao(dados.resposta, "", dados.eventos);
-      conversa.push({ papel: "usuario", texto: pergunta }, { papel: "agente", texto: dados.resposta, eventos: dados.eventos });
+      balao(dados.resposta, "", dados.eventos, dados.lembradas);
+      conversa.push({ papel: "usuario", texto: pergunta }, { papel: "agente", texto: dados.resposta, eventos: dados.eventos, lembradas: dados.lembradas });
       gravarConversa(donoDoTurno, conversa);
       carregarMemorias();
     } catch (erro) {
@@ -186,7 +213,11 @@
     }
   });
 
+  // Trocar o modo e o instante dispara consultas seguidas; só a última pode pintar o
+  // painel, senão uma resposta atrasada mostra o instante errado.
+  let ultimaConsulta = 0;
   async function carregarMemorias() {
+    const minha = ++ultimaConsulta;
     const modo = $("modo").value;
     const parametros = new URLSearchParams({ modo });
     if (modo !== "agora") {
@@ -195,9 +226,11 @@
     }
     try {
       const dados = await chamar("/api/memorias?" + parametros);
+      if (minha !== ultimaConsulta) return;
       if (!dados.memorias.length) { $("lista").replaceChildren(elemento("p", "vazio", "Nada por aqui.")); return; }
       $("lista").replaceChildren(...dados.memorias.map(cartaoDeMemoria));
     } catch (erro) {
+      if (minha !== ultimaConsulta) return;
       $("lista").replaceChildren(elemento("p", "evento erro", erro.message));
     }
   }

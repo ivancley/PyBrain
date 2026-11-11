@@ -17,7 +17,7 @@ make chat                                 # http://127.0.0.1:8010 (PORTA_CHAT=..
 ```
 
 Não há `manage.py migrate`: a app não tem models. O schema da memória
-(`MEMORIA_SCHEMA`, padrão `chat_teste`) é criado pelo `Memoria.migrar()` na
+(`MEMORIA_SCHEMA`, padrão `chat_teste`) é criado pelo `Memory.migrate()` na
 primeira requisição.
 
 ## Configuração (`app_de_teste/.env`)
@@ -27,7 +27,7 @@ primeira requisição.
 | `OPENROUTER_API_KEY` | — | obrigatória |
 | `OPENROUTER_MODELO` | `openai/gpt-4o-mini` | o modelo que conversa |
 | `OPENROUTER_MODELO_EXTRATOR` | o mesmo de cima | o modelo que decide o que lembrar |
-| `EMBEDDINGS` | `openrouter` | `falso` usa o `ProvedorDeEmbeddingsFalso` (sem rede, sem semântica) |
+| `EMBEDDINGS` | `openrouter` | `falso` usa o `FakeEmbeddingProvider` (sem rede, sem semântica) |
 | `OPENROUTER_MODELO_EMBEDDING` | `openai/text-embedding-3-small` | o modelo de embedding |
 | `OPENROUTER_DIMENSAO_EMBEDDING` | `1536` | tem que bater com o modelo de embedding |
 | `CHAT_DATABASE_URL` | o banco do `make db-up` | o Postgres |
@@ -39,11 +39,16 @@ de outra dimensão? Mude `MEMORIA_SCHEMA` também, senão a primeira escrita lev
 
 ## Como um turno funciona
 
-1. `recuperar(consulta=<mensagem>)` traz as memórias mais parecidas da pessoa.
-2. Duas chamadas ao LLM, em paralelo, com essas memórias: a **resposta** (a
+A app testa a memória de longo prazo, não o LLM: o modelo **não recebe o
+histórico da conversa**, só a mensagem atual e as memórias do banco. Tudo o que o
+Brainiac sabe sobre a pessoa veio da `memory-lifecycle`; "memórias usadas",
+embaixo de cada resposta, mostra o que ele recebeu.
+
+1. `recall(query=<mensagem>)` traz até 12 memórias da pessoa, as mais parecidas.
+2. Duas chamadas ao LLM, em paralelo, com essas memórias e a mensagem atual: a **resposta** (a
    persona do Brainiac) e a **extração**, que devolve operações em JSON.
 3. As operações viram `lembrar`, `substituir`, `corrigir` ou `encerrar`, cada uma
-   numa transação curta pelo `ProvedorDjango`. A tela mostra cada uma como uma
+   numa transação curta pelo `DjangoProvider`. A tela mostra cada uma como uma
    etiqueta embaixo da resposta; uma falha da extração aparece como etiqueta de
    erro sem derrubar a resposta.
 
