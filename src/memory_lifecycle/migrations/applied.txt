@@ -1,0 +1,7 @@
+# Manifest of published migrations: number and sha256 of the raw file.
+# Read only by the guard tests/guards/test_migrations_append_only.py (ADR 0008).
+# A line goes in when the migration is frozen; from then on the file never changes.
+# PT: Manifesto das migrações publicadas: número e sha256 do arquivo cru.
+# PT: Lido só pela guarda tests/guards/test_migrations_append_only.py (ADR 0008).
+# PT: Uma linha entra quando a migração é congelada; daí em diante o arquivo nunca muda.
+0001 31a028219e3e11428b41a529717df5ae866e6f304dcb26c7e914adb6f31cb722

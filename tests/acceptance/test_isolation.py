@@ -1,35 +1,38 @@
-"""Cenário: isolamento. Nada de um tenant ou de um dono alcança outro, em nenhum modo."""
+"""Scenario: isolation. Nothing from one tenant or one owner reaches another, in any mode.
+
+PT: Cenário: isolamento. Nada de um tenant ou de um dono alcança outro, em nenhum modo.
+"""
 
 from __future__ import annotations
 
 import pytest
 
-from memory_lifecycle import ErroNaoEncontrado, Memoria
-from tests.conftest import RelogioManual
+from memory_lifecycle import Memory, NotFoundError
+from tests.conftest import ManualClock
 
 
-def test_dois_tenants_mesmo_dono_id(
-    memoria: Memoria, memoria_outro_tenant: Memoria, dono: str, relogio: RelogioManual
+def test_two_tenants_same_owner_id(
+    memory: Memory, other_tenant_memory: Memory, owner: str, clock: ManualClock
 ):
-    minha = memoria.lembrar(dono, "minha", categoria="nota")
-    memoria_outro_tenant.lembrar(dono, "deles", categoria="nota")
-    relogio.avancar(days=1)
+    mine = memory.remember(owner, "mine", kind="note")
+    other_tenant_memory.remember(owner, "theirs", kind="note")
+    clock.advance(days=1)
 
-    for argumentos in ({}, {"como_em": relogio()}, {"sabido_em": relogio()}):
-        assert [r.versao.conteudo for r in memoria.recuperar(dono, **argumentos)] == ["minha"]
-        assert [r.versao.conteudo for r in memoria_outro_tenant.recuperar(dono, **argumentos)] == [
-            "deles"
+    for arguments in ({}, {"as_of": clock()}, {"known_at": clock()}):
+        assert [r.version.content for r in memory.recall(owner, **arguments)] == ["mine"]
+        assert [r.version.content for r in other_tenant_memory.recall(owner, **arguments)] == [
+            "theirs"
         ]
 
-    with pytest.raises(ErroNaoEncontrado):
-        memoria_outro_tenant.historico(dono, minha.memoria_id)
+    with pytest.raises(NotFoundError):
+        other_tenant_memory.history(owner, mine.memory_id)
 
 
-def test_dois_donos_mesmo_tenant(memoria: Memoria, dono: str, outro_dono: str):
-    minha = memoria.lembrar(dono, "minha", categoria="nota")
-    memoria.lembrar(outro_dono, "deles", categoria="nota")
+def test_two_owners_same_tenant(memory: Memory, owner: str, other_owner: str):
+    mine = memory.remember(owner, "mine", kind="note")
+    memory.remember(other_owner, "theirs", kind="note")
 
-    assert [r.versao.conteudo for r in memoria.recuperar(outro_dono)] == ["deles"]
-    with pytest.raises(ErroNaoEncontrado):
-        memoria.substituir(outro_dono, minha.memoria_id, "sequestrada")
-    assert [v.conteudo for v in memoria.historico(dono, minha.memoria_id)] == ["minha"]
+    assert [r.version.content for r in memory.recall(other_owner)] == ["theirs"]
+    with pytest.raises(NotFoundError):
+        memory.supersede(other_owner, mine.memory_id, "hijacked")
+    assert [v.content for v in memory.history(owner, mine.memory_id)] == ["mine"]

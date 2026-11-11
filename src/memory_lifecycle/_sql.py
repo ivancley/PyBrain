@@ -1,4 +1,11 @@
-"""O texto SQL compartilhado: identificadores, colunas e conversões de valor.
+"""Shared SQL text: identifiers, columns and value conversions.
+
+Values always travel as ``%s``. Identifiers cannot, so the schema name is validated
+once by a strict expression and quoted here; no other module builds an identifier.
+Vectors and uuids travel as text so that psycopg2 and psycopg 3 behave the same
+without a registered adapter (ADR 0007).
+
+PT: O texto SQL compartilhado: identificadores, colunas e conversões de valor.
 
 Valores viajam sempre como ``%s``. Identificadores não podem viajar assim, então o
 nome do schema é validado uma vez por uma expressão estrita e citado aqui; nenhum
@@ -16,130 +23,170 @@ from datetime import datetime
 from typing import Any, Final
 
 from memory_lifecycle.exceptions import (
-    ErroDeConfiguracao,
-    ErroDeConflito,
-    ErroDeDimensaoDeEmbedding,
-    ErroMemoryLifecycle,
+    ConfigurationError,
+    ConflictError,
+    EmbeddingDimensionError,
+    MemoryLifecycleError,
 )
-from memory_lifecycle.model import VersaoDeMemoria
-from memory_lifecycle.temporal import Modo, Momento
+from memory_lifecycle.model import MemoryVersion
+from memory_lifecycle.temporal import Mode, Moment
 
 _SCHEMA = re.compile(r"^[a-z_][a-z0-9_]{0,62}$")
 _UUID = re.compile(r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$")
 
-#: Colunas na ordem de ``VersaoDeMemoria``; uuids lidos como texto.
-COLUNAS: Final = (
-    "versao_id::text, memoria_id::text, tenant_id, dono_id, categoria, conteudo, "
-    "entidade_id, contexto_id, origem, modelo_embedding, valido_de, valido_ate, "
-    "registrado_em, substituido_em, versao_anterior_id::text"
+#: Columns in ``MemoryVersion`` order; uuids read as text.
+#: PT: Colunas na ordem de ``MemoryVersion``; uuids lidos como texto.
+COLUMNS: Final = (
+    "version_id::text, memory_id::text, tenant_id, owner_id, kind, content, "
+    "entity_id, context_id, source, embedding_model, valid_from, valid_to, "
+    "recorded_at, superseded_at, previous_version_id::text"
 )
 
 
-#: O predicado de cada modo (ADR 0002) e quantas vezes o instante entra nele.
-_PREDICADOS: Final[Mapping[Modo, tuple[str, int]]] = {
-    "como_em": (
-        "substituido_em IS NULL AND valido_de <= %s AND (valido_ate IS NULL OR valido_ate > %s)",
+#: Each mode's predicate (ADR 0002) and how many times the instant goes into it.
+#: PT: O predicado de cada modo (ADR 0002) e quantas vezes o instante entra nele.
+_PREDICATES: Final[Mapping[Mode, tuple[str, int]]] = {
+    "as_of": (
+        "superseded_at IS NULL AND valid_from <= %s AND (valid_to IS NULL OR valid_to > %s)",
         2,
     ),
-    "sabido_em": (
-        "registrado_em <= %s AND (substituido_em IS NULL OR substituido_em > %s) "
-        "AND valido_de <= %s AND (valido_ate IS NULL OR valido_ate > %s)",
+    "known_at": (
+        "recorded_at <= %s AND (superseded_at IS NULL OR superseded_at > %s) "
+        "AND valid_from <= %s AND (valid_to IS NULL OR valid_to > %s)",
         4,
     ),
 }
 
 
 @dataclass(frozen=True, slots=True)
-class Filtro:
-    """Tenant e dono de toda instrução, e a tabela de versões já citada."""
+class Filter:
+    """Tenant and owner of every statement, and the already-quoted versions table.
 
-    tabela: str
+    PT: Tenant e dono de toda instrução, e a tabela de versões já citada.
+    """
+
+    table: str
     tenant_id: str
-    dono_id: str
+    owner_id: str
 
 
-def validar_schema(nome: str) -> str:
-    """Devolve ``nome`` se for um identificador simples; senão ``ErroDeConfiguracao``."""
-    if not _SCHEMA.fullmatch(nome):
-        raise ErroDeConfiguracao(
-            f"nome de schema inválido: {nome!r}; use letras minúsculas, dígitos e _ "
-            "(até 63 caracteres, sem começar por dígito)"
+def validate_schema(name: str) -> str:
+    """Return ``name`` if it is a simple identifier; otherwise ``ConfigurationError``.
+
+    PT: Devolve ``name`` se for um identificador simples; senão ``ConfigurationError``.
+    """
+    if not _SCHEMA.fullmatch(name):
+        raise ConfigurationError(
+            f"invalid schema name: {name!r}; use lowercase letters, digits and _ "
+            "(up to 63 characters, not starting with a digit)"
         )
-    return nome
+    return name
 
 
-def citar(schema: str, objeto: str) -> str:
-    """Identificador qualificado e citado: ``"schema"."objeto"``; só após validar."""
-    return f'"{validar_schema(schema)}"."{objeto}"'
+def quote(schema: str, obj: str) -> str:
+    """Qualified, quoted identifier: ``"schema"."obj"``; only after validating.
+
+    PT: Identificador qualificado e citado: ``"schema"."obj"``; só após validar.
+    """
+    return f'"{validate_schema(schema)}"."{obj}"'
 
 
-def vetor_como_texto(vetor: Sequence[float]) -> str:
-    """O literal de texto do pgvector, ``[0.1,0.2]``, sem perder precisão."""
-    return "[" + ",".join(repr(float(valor)) for valor in vetor) + "]"
+def vector_as_text(vector: Sequence[float]) -> str:
+    """The pgvector text literal, ``[0.1,0.2]``, without losing precision.
+
+    PT: O literal de texto do pgvector, ``[0.1,0.2]``, sem perder precisão.
+    """
+    return "[" + ",".join(repr(float(value)) for value in vector) + "]"
 
 
-def linha_para_versao(linha: Sequence[Any]) -> VersaoDeMemoria:
-    """Converte uma linha lida com ``COLUNAS`` no registro de versão."""
-    return VersaoDeMemoria(*linha)
+def row_to_version(row: Sequence[Any]) -> MemoryVersion:
+    """Convert a row read with ``COLUMNS`` into the version record.
+
+    PT: Converte uma linha lida com ``COLUMNS`` no registro de versão.
+    """
+    return MemoryVersion(*row)
 
 
-def predicado(momento: Momento) -> tuple[str, tuple[datetime, ...]]:
-    """O texto do predicado do modo e os seus parâmetros, na ordem dos ``%s``."""
-    texto, vezes = _PREDICADOS[momento.modo]
-    return texto, (momento.instante,) * vezes
+def predicate(moment: Moment) -> tuple[str, tuple[datetime, ...]]:
+    """The mode's predicate text and its parameters, in ``%s`` order.
+
+    PT: O texto do predicado do modo e os seus parâmetros, na ordem dos ``%s``.
+    """
+    text, times = _PREDICATES[moment.mode]
+    return text, (moment.instant,) * times
 
 
-def e_uuid(texto: str) -> bool:
-    """Diz se ``texto`` é um uuid; um id inválido nunca vai ao banco.
+def is_uuid(text: str) -> bool:
+    """Tell whether ``text`` is a uuid; an invalid id never reaches the database.
+
+    An invalid value in ``%s::uuid`` is a Postgres error and would abort the app's
+    transaction in ``PARTICIPATE`` mode; that is why the check happens first, and it
+    only accepts the canonical 8-4-4-4-12 form, which Postgres always accepts.
+
+    PT: Diz se ``text`` é um uuid; um id inválido nunca vai ao banco.
 
     Um valor inválido em ``%s::uuid`` é erro no Postgres e abortaria a transação
-    do app no modo ``PARTICIPAR``; por isso a checagem acontece antes, e só aceita
+    do app no modo ``PARTICIPATE``; por isso a checagem acontece antes, e só aceita
     a forma canônica de 8-4-4-4-12 dígitos, que o Postgres sempre aceita.
     """
-    return isinstance(texto, str) and _UUID.fullmatch(texto) is not None
+    return isinstance(text, str) and _UUID.fullmatch(text) is not None
 
 
-def normalizar_uuid(texto: str) -> str:
-    """A forma em que o banco devolve um uuid (minúsculas), para comparar com ``==``."""
-    return str(uuid.UUID(texto))
+def normalize_uuid(text: str) -> str:
+    """The form in which the database returns a uuid (lowercase), to compare with ``==``.
+
+    PT: A forma em que o banco devolve um uuid (minúsculas), para comparar com ``==``.
+    """
+    return str(uuid.UUID(text))
 
 
-def sqlstate(erro: BaseException) -> str | None:
-    """O SQLSTATE de um erro de driver: ``.sqlstate`` (psycopg 3) ou ``.pgcode`` (psycopg2)."""
-    for atributo in ("sqlstate", "pgcode"):
-        valor = getattr(erro, atributo, None)
-        if isinstance(valor, str):
-            return valor
+def sqlstate(error: BaseException) -> str | None:
+    """A driver error's SQLSTATE: ``.sqlstate`` (psycopg 3) or ``.pgcode`` (psycopg2).
+
+    PT: O SQLSTATE de um erro de driver: ``.sqlstate`` (psycopg 3) ou ``.pgcode`` (psycopg2).
+    """
+    for attribute in ("sqlstate", "pgcode"):
+        value = getattr(error, attribute, None)
+        if isinstance(value, str):
+            return value
     return None
 
 
-def _restricao(erro: BaseException) -> str | None:
-    """O nome da restrição violada, que os dois drivers expõem em ``erro.diag``."""
-    return getattr(getattr(erro, "diag", None), "constraint_name", None)
+def _constraint(error: BaseException) -> str | None:
+    """The violated constraint's name, which both drivers expose in ``error.diag``.
+
+    PT: O nome da restrição violada, que os dois drivers expõem em ``error.diag``.
+    """
+    return getattr(getattr(error, "diag", None), "constraint_name", None)
 
 
-def traduzir(erro: BaseException) -> ErroMemoryLifecycle | None:
-    """O erro tipado que um erro de banco significa para quem chama, ou ``None``.
+def translate(error: BaseException) -> MemoryLifecycleError | None:
+    """The typed error a database error means to the caller, or ``None``.
+
+    Only translates what has a known consequence; the rest propagates as it came,
+    never swallowed nor renamed to something generic.
+
+    PT: O erro tipado que um erro de banco significa para quem chama, ou ``None``.
 
     Só traduz o que tem consequência conhecida; o resto sobe como veio, nunca
     engolido nem rebatizado de genérico.
     """
-    codigo = sqlstate(erro)
-    if codigo == "23505" and _restricao(erro) == "ux_versoes_vigente":
-        return ErroDeConflito(
-            "outra escrita gravou esta versão primeiro; releia com historico e decida"
+    code = sqlstate(error)
+    if code == "23505" and _constraint(error) == "ux_versions_current":
+        return ConflictError(
+            "another write stored this version first; reread with history and decide"
         )
-    if codigo in ("40001", "40P01"):
-        return ErroDeConflito(
-            "o banco desfez a operação por conflito com outra transação (serialização ou "
-            "deadlock); releia com historico e decida"
+    if code in ("40001", "40P01"):
+        return ConflictError(
+            "the database rolled back the operation over a conflict with another transaction "
+            "(serialization or deadlock); reread with history and decide"
         )
-    if codigo in ("42P01", "3F000"):
-        return ErroDeConfiguracao(
-            "o schema da memória não existe ou não foi migrado; chame Memoria.migrar()"
+    if code in ("42P01", "3F000"):
+        return ConfigurationError(
+            "the memory schema does not exist or was not migrated; call Memory.migrate()"
         )
-    if codigo == "22000" and "dimensions" in str(erro):
-        return ErroDeDimensaoDeEmbedding(
-            "o vetor não tem a dimensão da coluna do schema; o provedor de embeddings mudou"
+    if code == "22000" and "dimensions" in str(error):
+        return EmbeddingDimensionError(
+            "the vector does not have the schema column's dimension; the embedding provider changed"
         )
     return None

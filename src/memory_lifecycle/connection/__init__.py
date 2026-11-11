@@ -1,8 +1,16 @@
-"""O contrato do provedor de conexão: a aplicação é dona da conexão.
+"""The connection provider contract: the application owns the connection.
+
+The library never opens a pool of its own. It asks the provider for a DB-API
+connection, runs its statements and either commits (``OWN``) or leaves the
+transaction to the application (``PARTICIPATE``). Adapters for DSN, psycopg pool,
+Django and SQLAlchemy are optional extras in sibling modules
+(``.claude/rules/adapters.md``).
+
+PT: O contrato do provedor de conexão: a aplicação é dona da conexão.
 
 A biblioteca nunca abre um pool próprio. Ela pede ao provedor uma conexão
-DB-API, executa suas instruções e ou faz commit (``PROPRIA``) ou deixa a
-transação com a aplicação (``PARTICIPAR``). Adaptadores para DSN, pool do
+DB-API, executa suas instruções e ou faz commit (``OWN``) ou deixa a
+transação com a aplicação (``PARTICIPATE``). Adaptadores para DSN, pool do
 psycopg, Django e SQLAlchemy são extras opcionais em módulos irmãos
 (``.claude/rules/adapters.md``).
 """
@@ -16,134 +24,191 @@ from contextlib import AbstractContextManager
 from enum import StrEnum
 from typing import Any, Protocol, runtime_checkable
 
-from memory_lifecycle.exceptions import ErroDeConfiguracao
+from memory_lifecycle.exceptions import ConfigurationError
 
-#: Caminho pontuado (``pacote.modulo:funcao``) de um callable sem argumentos que
-#: devolve um ``ProvedorDeConexao``. Só o caminho viaja pelo ambiente; um objeto de
-#: pool nunca.
-VARIAVEL_AMBIENTE_PROVEDOR = "MEMORY_LIFECYCLE_PROVEDOR_CONEXAO"
+#: Dotted path (``package.module:function``) of a no-argument callable that returns a
+#: ``ConnectionProvider``. Only the path travels through the environment; a pool object
+#: never does.
+#: PT: Caminho pontuado (``pacote.modulo:funcao``) de um callable sem argumentos que
+#: PT: devolve um ``ConnectionProvider``. Só o caminho viaja pelo ambiente; um objeto de
+#: PT: pool nunca.
+PROVIDER_ENV_VAR = "MEMORY_LIFECYCLE_CONNECTION_PROVIDER"
 
 
-class ModoDeTransacao(StrEnum):
-    """Quem faz commit.
+class TransactionMode(StrEnum):
+    """Who commits.
 
-    ``PARTICIPAR``: a aplicação faz; a biblioteca nunca chama ``commit`` nem
+    ``PARTICIPATE``: the application does; the library never calls ``commit`` or
+    ``rollback``, so a memory write lands together with the request that caused it. A
+    connection in autocommit has no transaction to participate in: the library raises
+    ``ConfigurationError`` before writing (ADR 0004). ``OWN``: the library commits on
+    success and rolls back on error.
+
+    PT: Quem faz commit.
+
+    ``PARTICIPATE``: a aplicação faz; a biblioteca nunca chama ``commit`` nem
     ``rollback``, então uma escrita de memória entra junto com o request que a
     causou. Uma conexão em autocommit não tem transação para participar: a
-    biblioteca levanta ``ErroDeConfiguracao`` antes de escrever (ADR 0004).
-    ``PROPRIA``: a biblioteca faz commit no sucesso e rollback no erro.
+    biblioteca levanta ``ConfigurationError`` antes de escrever (ADR 0004).
+    ``OWN``: a biblioteca faz commit no sucesso e rollback no erro.
     """
 
-    PARTICIPAR = "participar"
-    PROPRIA = "propria"
+    PARTICIPATE = "participate"
+    OWN = "own"
 
 
 class Cursor(Protocol):
-    """A fatia do DB-API 2.0 que a biblioteca usa; psycopg2 e psycopg 3 cabem nela."""
+    """The slice of DB-API 2.0 the library uses; psycopg2 and psycopg 3 fit in it.
+
+    PT: A fatia do DB-API 2.0 que a biblioteca usa; psycopg2 e psycopg 3 cabem nela.
+    """
 
     @property
     def rowcount(self) -> int:
-        """Linhas afetadas pela última instrução; conferido em todo fechamento condicional."""
+        """Rows affected by the last statement; checked on every conditional close.
+
+        PT: Linhas afetadas pela última instrução; conferido em todo fechamento condicional.
+        """
         ...
 
     def execute(self, operation: str, parameters: Sequence[Any] | None = None, /) -> Any:
-        """Executa uma instrução com marcadores ``%s``; parâmetros sempre posicionais."""
+        """Execute a statement with ``%s`` placeholders; parameters always positional.
+
+        PT: Executa uma instrução com marcadores ``%s``; parâmetros sempre posicionais.
+        """
         ...
 
     def fetchone(self) -> Any:
-        """Devolve a próxima linha ou ``None``."""
+        """Return the next row or ``None``.
+
+        PT: Devolve a próxima linha ou ``None``.
+        """
         ...
 
     def fetchall(self) -> Sequence[Any]:
-        """Devolve as linhas restantes."""
+        """Return the remaining rows.
+
+        PT: Devolve as linhas restantes.
+        """
         ...
 
     def close(self) -> None:
-        """Libera o cursor."""
+        """Release the cursor.
+
+        PT: Libera o cursor.
+        """
         ...
 
 
-class Conexao(Protocol):
-    """A fatia de uma conexão DB-API 2.0 que a biblioteca usa."""
+class Connection(Protocol):
+    """The slice of a DB-API 2.0 connection the library uses.
+
+    PT: A fatia de uma conexão DB-API 2.0 que a biblioteca usa.
+    """
 
     def cursor(self) -> Cursor:
-        """Abre um cursor; a biblioteca o fecha."""
+        """Open a cursor; the library closes it.
+
+        PT: Abre um cursor; a biblioteca o fecha.
+        """
         ...
 
     def commit(self) -> None:
-        """Commit; chamado só em ``ModoDeTransacao.PROPRIA``."""
+        """Commit; called only in ``TransactionMode.OWN``.
+
+        PT: Commit; chamado só em ``TransactionMode.OWN``.
+        """
         ...
 
     def rollback(self) -> None:
-        """Rollback; chamado só em ``ModoDeTransacao.PROPRIA``."""
+        """Roll back; called only in ``TransactionMode.OWN``.
+
+        PT: Rollback; chamado só em ``TransactionMode.OWN``.
+        """
         ...
 
 
 @runtime_checkable
-class ProvedorDeConexao(Protocol):
-    """Entrega uma conexão à biblioteca e diz se ela pode fazer commit nela.
+class ConnectionProvider(Protocol):
+    """Hand a connection to the library and say whether it may commit on it.
 
-    ``conexao()`` é um gerenciador de contexto: a biblioteca segura a conexão só
+    ``connection()`` is a context manager: the library holds the connection only during
+    one operation and never during a call to the embedding provider.
+
+    PT: Entrega uma conexão à biblioteca e diz se ela pode fazer commit nela.
+
+    ``connection()`` é um gerenciador de contexto: a biblioteca segura a conexão só
     durante uma operação e nunca durante uma chamada ao provedor de embeddings.
     """
 
-    modo_de_transacao: ModoDeTransacao
+    transaction_mode: TransactionMode
 
-    def conexao(self) -> AbstractContextManager[Conexao]:
-        """Cede uma conexão DB-API; o provedor decide pool e liberação."""
+    def connection(self) -> AbstractContextManager[Connection]:
+        """Yield a DB-API connection; the provider decides pooling and release.
+
+        PT: Cede uma conexão DB-API; o provedor decide pool e liberação.
+        """
         ...
 
 
-def carregar_provedor(caminho_pontuado: str | None = None) -> ProvedorDeConexao:
-    """Carrega o provedor nomeado por ``caminho_pontuado`` ou por ``VARIAVEL_AMBIENTE_PROVEDOR``.
+def load_provider(dotted_path: str | None = None) -> ConnectionProvider:
+    """Load the provider named by ``dotted_path`` or by ``PROVIDER_ENV_VAR``.
+
+    The path has the form ``package.module:function``, and the function, with no
+    arguments, returns the provider; so the app decides pool and configuration in its
+    own code, and only the path travels through the environment. Raises
+    ``ConfigurationError`` when the path is missing, malformed, does not import, or the
+    returned object does not honor ``ConnectionProvider``.
+
+    PT: Carrega o provedor nomeado por ``dotted_path`` ou por ``PROVIDER_ENV_VAR``.
 
     O caminho tem a forma ``pacote.modulo:funcao``, e a função, sem argumentos,
     devolve o provedor; assim o app decide pool e configuração no seu código, e
-    só o caminho viaja pelo ambiente. Levanta ``ErroDeConfiguracao`` quando o
+    só o caminho viaja pelo ambiente. Levanta ``ConfigurationError`` quando o
     caminho falta, está malformado, não importa, ou o objeto devolvido não honra
-    ``ProvedorDeConexao``.
+    ``ConnectionProvider``.
     """
-    caminho = caminho_pontuado or os.environ.get(VARIAVEL_AMBIENTE_PROVEDOR)
-    if not caminho:
-        raise ErroDeConfiguracao(
-            f"nenhum provedor de conexão: passe um, ou defina {VARIAVEL_AMBIENTE_PROVEDOR} "
-            "com 'pacote.modulo:funcao'"
+    path = dotted_path or os.environ.get(PROVIDER_ENV_VAR)
+    if not path:
+        raise ConfigurationError(
+            f"no connection provider: pass one, or set {PROVIDER_ENV_VAR} "
+            "to 'package.module:function'"
         )
-    nome_do_modulo, separador, atributo = caminho.partition(":")
-    if not separador or not nome_do_modulo or not atributo:
-        raise ErroDeConfiguracao(
-            f"caminho de provedor malformado: {caminho!r}; use 'pacote.modulo:funcao'"
+    module_name, separator, attribute = path.partition(":")
+    if not separator or not module_name or not attribute:
+        raise ConfigurationError(
+            f"malformed provider path: {path!r}; use 'package.module:function'"
         )
     try:
-        modulo = importlib.import_module(nome_do_modulo)
-    except ModuleNotFoundError as erro:
-        if erro.name and nome_do_modulo.startswith(erro.name):
-            raise ErroDeConfiguracao(
-                f"o módulo {nome_do_modulo!r} de {caminho!r} não existe"
-            ) from erro
-        raise ErroDeConfiguracao(
-            f"o módulo {nome_do_modulo!r} existe, mas falta a dependência {erro.name!r} dele"
-        ) from erro
-    fabrica = getattr(modulo, atributo, None)
-    if not callable(fabrica):
-        raise ErroDeConfiguracao(f"{caminho!r} não aponta para uma função")
-    provedor = fabrica()
-    if not isinstance(provedor, ProvedorDeConexao):
-        raise ErroDeConfiguracao(
-            f"{caminho!r} devolveu {type(provedor).__name__}, que não é um ProvedorDeConexao "
-            "(precisa de modo_de_transacao e conexao())"
+        module = importlib.import_module(module_name)
+    except ModuleNotFoundError as error:
+        if error.name and module_name.startswith(error.name):
+            raise ConfigurationError(
+                f"module {module_name!r} of {path!r} does not exist"
+            ) from error
+        raise ConfigurationError(
+            f"module {module_name!r} exists, but its dependency {error.name!r} is missing"
+        ) from error
+    factory = getattr(module, attribute, None)
+    if not callable(factory):
+        raise ConfigurationError(f"{path!r} does not point to a function")
+    provider = factory()
+    if not isinstance(provider, ConnectionProvider):
+        raise ConfigurationError(
+            f"{path!r} returned {type(provider).__name__}, which is not a ConnectionProvider "
+            "(it needs transaction_mode and connection())"
         )
-    from memory_lifecycle.connection._unidade import modo_do_provedor
+    from memory_lifecycle.connection._unit_of_work import provider_mode
 
-    modo_do_provedor(provedor)
-    return provedor
+    provider_mode(provider)
+    return provider
 
 
 __all__ = [
-    "VARIAVEL_AMBIENTE_PROVEDOR",
-    "Conexao",
+    "PROVIDER_ENV_VAR",
+    "Connection",
+    "ConnectionProvider",
     "Cursor",
-    "ModoDeTransacao",
-    "ProvedorDeConexao",
-    "carregar_provedor",
+    "TransactionMode",
+    "load_provider",
 ]

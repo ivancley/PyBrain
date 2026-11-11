@@ -2,7 +2,7 @@
 
 COMPOSE := docker compose
 # Também definida em .env.example; a suíte pula com motivo visível quando ela não está definida.
-export MEMORY_LIFECYCLE_DSN_TESTE ?= postgresql://memory:memory@localhost:5433/memory_lifecycle
+export MEMORY_LIFECYCLE_TEST_DSN ?= postgresql://memory:memory@localhost:5433/memory_lifecycle
 
 help:
 	@grep -E '^[a-zA-Z_-]+:.*?##' $(MAKEFILE_LIST) | awk 'BEGIN{FS=":.*?## "}{printf "  \033[36m%-18s\033[0m %s\n", $$1, $$2}'
@@ -14,7 +14,7 @@ install: ## Cria o .venv e instala o pacote com o grupo dev (uv)
 db-up: ## Postgres 16 + pgvector no Docker para a suíte (porta 5433)
 	$(COMPOSE) up -d postgres
 	@until $(COMPOSE) exec -T postgres pg_isready -U memory -d memory_lifecycle >/dev/null 2>&1; do sleep 1; done
-	@echo "Postgres pronto em $(MEMORY_LIFECYCLE_DSN_TESTE)"
+	@echo "Postgres pronto em $(MEMORY_LIFECYCLE_TEST_DSN)"
 
 db-down: ## Para o banco, mantendo o volume
 	$(COMPOSE) stop postgres

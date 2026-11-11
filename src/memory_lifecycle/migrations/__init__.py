@@ -1,8 +1,15 @@
-"""O executor de migrações: arquivos SQL numerados, aplicados em ordem, uma vez cada.
+"""The migration runner: numbered SQL files, applied in order, once each.
+
+Without an ORM, the library owns its schema (ADR 0008). Each ``NNNN_<subject>.sql``
+file in this package is rendered with the schema name (validated and quoted) and the
+vector dimension, applied and recorded in ``schema_version`` with its sha256. An
+advisory lock serializes two simultaneous calls.
+
+PT: O executor de migrações: arquivos SQL numerados, aplicados em ordem, uma vez cada.
 
 Sem ORM, a biblioteca é dona do seu schema (ADR 0008). Cada arquivo
 ``NNNN_<assunto>.sql`` deste pacote é renderizado com o nome do schema (validado e
-citado) e a dimensão do vetor, aplicado e registrado em ``versao_do_schema`` com
+citado) e a dimensão do vetor, aplicado e registrado em ``schema_version`` com
 o seu sha256. Uma trava consultiva serializa duas chamadas simultâneas.
 """
 
@@ -14,128 +21,156 @@ from dataclasses import dataclass
 from importlib import resources
 from importlib.resources.abc import Traversable
 
-from memory_lifecycle._sql import citar, sqlstate
+from memory_lifecycle._sql import quote, sqlstate
 from memory_lifecycle.connection import Cursor
 from memory_lifecycle.exceptions import (
-    ErroDeConfiguracao,
-    ErroDeDimensaoDeEmbedding,
-    ErroDeMigracao,
+    ConfigurationError,
+    EmbeddingDimensionError,
+    MigrationError,
 )
 
-_ARQUIVO = re.compile(r"^(\d{4})_([a-z0-9_]+)\.sql$")
-#: Uma trava só para todos os schemas: `CREATE EXTENSION` também é do banco inteiro.
-_TRAVA = "memory_lifecycle:migrar"
+_FILE = re.compile(r"^(\d{4})_([a-z0-9_]+)\.sql$")
+#: A single lock for every schema: `CREATE EXTENSION` is database-wide too.
+#: PT: Uma trava só para todos os schemas: `CREATE EXTENSION` também é do banco inteiro.
+_LOCK = "memory_lifecycle:migrate"
 
 
 @dataclass(frozen=True, slots=True)
-class Migracao:
-    """Um arquivo de migração lido do pacote; ``sha256`` é do arquivo cru."""
+class Migration:
+    """A migration file read from the package; ``sha256`` is of the raw file.
 
-    numero: int
-    nome: str
+    PT: Um arquivo de migração lido do pacote; ``sha256`` é do arquivo cru.
+    """
+
+    number: int
+    name: str
     sha256: str
     sql: str
 
 
-def descobrir(origem: Traversable | None = None) -> list[Migracao]:
-    """Lê as migrações do pacote (ou de ``origem``) em ordem; número repetido é erro."""
-    encontradas: dict[int, Migracao] = {}
-    pasta = origem if origem is not None else resources.files(__package__)
-    for item in pasta.iterdir():
-        casamento = _ARQUIVO.match(item.name)
-        if casamento is None:
+def discover(source: Traversable | None = None) -> list[Migration]:
+    """Read the package's migrations (or ``source``'s) in order; a repeated number is an error.
+
+    PT: Lê as migrações do pacote (ou de ``source``) em ordem; número repetido é erro.
+    """
+    found: dict[int, Migration] = {}
+    folder = source if source is not None else resources.files(__package__)
+    for item in folder.iterdir():
+        match = _FILE.match(item.name)
+        if match is None:
             continue
         sql = item.read_text(encoding="utf-8")
-        migracao = Migracao(
-            numero=int(casamento.group(1)),
-            nome=item.name,
+        migration = Migration(
+            number=int(match.group(1)),
+            name=item.name,
             sha256=hashlib.sha256(sql.encode("utf-8")).hexdigest(),
             sql=sql,
         )
-        if migracao.numero in encontradas:
-            raise ErroDeMigracao(
-                f"duas migrações com o número {migracao.numero:04d}: "
-                f"{encontradas[migracao.numero].nome} e {migracao.nome}"
+        if migration.number in found:
+            raise MigrationError(
+                f"two migrations numbered {migration.number:04d}: "
+                f"{found[migration.number].name} and {migration.name}"
             )
-        encontradas[migracao.numero] = migracao
-    return [encontradas[numero] for numero in sorted(encontradas)]
+        found[migration.number] = migration
+    return [found[number] for number in sorted(found)]
 
 
-def renderizar(sql: str, schema: str, dimensao: int) -> str:
-    """Troca ``{schema}`` pelo identificador citado e ``{dimensao}`` pelo inteiro."""
-    return sql.replace("{schema}", f'"{schema}"').replace("{dimensao}", str(int(dimensao)))
+def render(sql: str, schema: str, dimension: int) -> str:
+    """Replace ``{schema}`` with the quoted identifier and ``{dimension}`` with the integer.
+
+    PT: Troca ``{schema}`` pelo identificador citado e ``{dimension}`` pelo inteiro.
+    """
+    return sql.replace("{schema}", f'"{schema}"').replace("{dimension}", str(int(dimension)))
 
 
-def aplicar(cur: Cursor, schema: str, dimensao: int) -> int:
-    """Aplica as migrações pendentes no ``schema`` e devolve quantas aplicou.
+def apply(cur: Cursor, schema: str, dimension: int) -> int:
+    """Apply the pending migrations to ``schema`` and return how many were applied.
+
+    ``schema`` arrives already validated. Idempotent: a second call returns 0. Before
+    applying anything, checks that every already-applied migration still has the same
+    sha256 and exists in the package; afterwards, that the recorded dimension is the
+    embedding provider's.
+
+    PT: Aplica as migrações pendentes no ``schema`` e devolve quantas aplicou.
 
     ``schema`` já chega validado. Idempotente: uma segunda chamada devolve 0.
     Antes de aplicar qualquer coisa, confere que toda migração já aplicada ainda
     tem o mesmo sha256 e existe no pacote; depois, que a dimensão registrada é a
     do provedor de embeddings.
     """
-    tabela = citar(schema, "versao_do_schema")
-    cur.execute("SELECT pg_advisory_xact_lock(hashtext(%s))", (_TRAVA,))
-    _garantir_extensao(cur)
+    table = quote(schema, "schema_version")
+    cur.execute("SELECT pg_advisory_xact_lock(hashtext(%s))", (_LOCK,))
+    _ensure_extension(cur)
     cur.execute("SELECT 1 FROM pg_namespace WHERE nspname = %s", (schema,))
     if cur.fetchone() is None:
         cur.execute(f'CREATE SCHEMA "{schema}"')
     cur.execute(
-        f"CREATE TABLE IF NOT EXISTS {tabela} ("
-        "numero int PRIMARY KEY, nome text NOT NULL, sha256 text NOT NULL, "
-        "aplicada_em timestamptz NOT NULL)"
+        f"CREATE TABLE IF NOT EXISTS {table} ("
+        "number int PRIMARY KEY, name text NOT NULL, sha256 text NOT NULL, "
+        "applied_at timestamptz NOT NULL)"
     )
-    cur.execute(f"SELECT numero, sha256 FROM {tabela}")
-    aplicadas = {int(numero): str(sha) for numero, sha in cur.fetchall()}
-    migracoes = descobrir()
-    _conferir_aplicadas(aplicadas, migracoes)
-    contagem = 0
-    for migracao in migracoes:
-        if migracao.numero in aplicadas:
+    cur.execute(f"SELECT number, sha256 FROM {table}")
+    applied = {int(number): str(sha) for number, sha in cur.fetchall()}
+    migrations = discover()
+    _check_applied(applied, migrations)
+    count = 0
+    for migration in migrations:
+        if migration.number in applied:
             continue
         try:
-            cur.execute(renderizar(migracao.sql, schema, dimensao))
-        except Exception as erro:
-            raise ErroDeMigracao(
-                f"a migração {migracao.nome} falhou ao ser aplicada; nada foi gravado se a "
-                "transação for desfeita"
-            ) from erro
+            cur.execute(render(migration.sql, schema, dimension))
+        except Exception as error:
+            raise MigrationError(
+                f"migration {migration.name} failed to apply; nothing was stored if the "
+                "transaction is rolled back"
+            ) from error
         cur.execute(
-            f"INSERT INTO {tabela} (numero, nome, sha256, aplicada_em) VALUES (%s, %s, %s, now())",
-            (migracao.numero, migracao.nome, migracao.sha256),
+            f"INSERT INTO {table} (number, name, sha256, applied_at) VALUES (%s, %s, %s, now())",
+            (migration.number, migration.name, migration.sha256),
         )
-        contagem += 1
-    registrada = ler_dimensao(cur, schema)
-    if registrada != dimensao:
-        raise ErroDeDimensaoDeEmbedding(
-            f"o schema {schema!r} foi criado para vetores de {registrada} dimensões; o provedor "
-            f"de embeddings gera {dimensao}. Use outro schema ou o provedor original."
+        count += 1
+    recorded = read_dimension(cur, schema)
+    if recorded != dimension:
+        raise EmbeddingDimensionError(
+            f"schema {schema!r} was created for {recorded}-dimensional vectors; the embedding "
+            f"provider produces {dimension}. Use another schema or the original provider."
         )
-    return contagem
+    return count
 
 
-def ler_dimensao(cur: Cursor, schema: str) -> int:
-    """A dimensão registrada no schema; schema não migrado é ``ErroDeConfiguracao``.
+def read_dimension(cur: Cursor, schema: str) -> int:
+    """The dimension recorded in the schema; an unmigrated schema is ``ConfigurationError``.
+
+    Queries ``to_regclass`` first, so that a missing schema does not become a database
+    error, which would abort the app's transaction in ``PARTICIPATE`` mode.
+
+    PT: A dimensão registrada no schema; schema não migrado é ``ConfigurationError``.
 
     Consulta ``to_regclass`` antes, para que um schema ausente não vire erro de
-    banco, que abortaria a transação do app no modo ``PARTICIPAR``.
+    banco, que abortaria a transação do app no modo ``PARTICIPATE``.
     """
-    configuracao = citar(schema, "configuracao")
-    cur.execute("SELECT to_regclass(%s) IS NOT NULL", (configuracao,))
-    linha = cur.fetchone()
-    if linha is None or not linha[0]:
-        raise ErroDeConfiguracao(
-            f"o schema {schema!r} da memória não foi migrado; chame Memoria.migrar()"
+    settings = quote(schema, "settings")
+    cur.execute("SELECT to_regclass(%s) IS NOT NULL", (settings,))
+    row = cur.fetchone()
+    if row is None or not row[0]:
+        raise ConfigurationError(
+            f"memory schema {schema!r} was not migrated; call Memory.migrate()"
         )
-    cur.execute(f"SELECT valor FROM {configuracao} WHERE chave = 'dimensao'")
-    linha = cur.fetchone()
-    if linha is None:
-        raise ErroDeConfiguracao(f"o schema {schema!r} não tem a dimensão registrada")
-    return int(linha[0])
+    cur.execute(f"SELECT value FROM {settings} WHERE key = 'dimension'")
+    row = cur.fetchone()
+    if row is None:
+        raise ConfigurationError(f"schema {schema!r} has no recorded dimension")
+    return int(row[0])
 
 
-def _garantir_extensao(cur: Cursor) -> None:
-    """Instala o pgvector se faltar, sem deixar uma falha abortar a transação do app.
+def _ensure_extension(cur: Cursor) -> None:
+    """Install pgvector if missing, without letting a failure abort the app's transaction.
+
+    Tries ``CREATE EXTENSION`` inside its own savepoint: it works for the superuser, for
+    a managed service's admin role and for a trusted extension; when it fails, the
+    savepoint is rolled back and the error explains what to run.
+
+    PT: Instala o pgvector se faltar, sem deixar uma falha abortar a transação do app.
 
     Tenta o ``CREATE EXTENSION`` dentro de um savepoint próprio: funciona para o
     superusuário, para o papel administrativo de um serviço gerenciado e para uma
@@ -146,42 +181,42 @@ def _garantir_extensao(cur: Cursor) -> None:
         "SELECT EXISTS (SELECT 1 FROM pg_extension WHERE extname = 'vector'),"
         " EXISTS (SELECT 1 FROM pg_available_extensions WHERE name = 'vector')"
     )
-    linha = cur.fetchone()
-    instalada, disponivel = linha if linha else (False, False)
-    if instalada:
+    row = cur.fetchone()
+    installed, available = row if row else (False, False)
+    if installed:
         return
-    if not disponivel:
-        raise ErroDeConfiguracao(
-            "o servidor PostgreSQL não tem o pgvector; instale o pacote do pgvector no "
-            "servidor e rode `CREATE EXTENSION vector;` neste banco"
+    if not available:
+        raise ConfigurationError(
+            "the PostgreSQL server does not have pgvector; install the pgvector package on "
+            "the server and run `CREATE EXTENSION vector;` in this database"
         )
-    cur.execute("SAVEPOINT memory_lifecycle_extensao")
+    cur.execute("SAVEPOINT memory_lifecycle_extension")
     try:
         cur.execute("CREATE EXTENSION IF NOT EXISTS vector")
-    except Exception as erro:
-        cur.execute("ROLLBACK TO SAVEPOINT memory_lifecycle_extensao")
-        if sqlstate(erro) == "42501":
-            raise ErroDeConfiguracao(
-                "a extensão pgvector não está instalada neste banco e este usuário não pode "
-                "instalá-la; rode `CREATE EXTENSION vector;` como superusuário e chame "
-                "migrar() de novo"
-            ) from erro
+    except Exception as error:
+        cur.execute("ROLLBACK TO SAVEPOINT memory_lifecycle_extension")
+        if sqlstate(error) == "42501":
+            raise ConfigurationError(
+                "the pgvector extension is not installed in this database and this user "
+                "cannot install it; run `CREATE EXTENSION vector;` as a superuser and call "
+                "migrate() again"
+            ) from error
         raise
-    cur.execute("RELEASE SAVEPOINT memory_lifecycle_extensao")
+    cur.execute("RELEASE SAVEPOINT memory_lifecycle_extension")
 
 
-def _conferir_aplicadas(aplicadas: dict[int, str], migracoes: list[Migracao]) -> None:
-    no_pacote = {migracao.numero: migracao for migracao in migracoes}
-    for numero, sha in sorted(aplicadas.items()):
-        migracao = no_pacote.get(numero)
-        if migracao is None:
-            raise ErroDeMigracao(
-                f"o banco tem a migração {numero:04d}, que esta versão da biblioteca não "
-                "conhece; atualize a biblioteca antes de usar este schema"
+def _check_applied(applied: dict[int, str], migrations: list[Migration]) -> None:
+    in_package = {migration.number: migration for migration in migrations}
+    for number, sha in sorted(applied.items()):
+        migration = in_package.get(number)
+        if migration is None:
+            raise MigrationError(
+                f"the database has migration {number:04d}, which this library version does "
+                "not know; upgrade the library before using this schema"
             )
-        if migracao.sha256 != sha:
-            raise ErroDeMigracao(
-                f"a migração {migracao.nome} mudou depois de aplicada (sha256 {sha[:12]}… no "
-                f"banco, {migracao.sha256[:12]}… no pacote); a correção é um arquivo novo, "
-                "nunca editar um aplicado (ADR 0008)"
+        if migration.sha256 != sha:
+            raise MigrationError(
+                f"migration {migration.name} changed after being applied (sha256 {sha[:12]}… in "
+                f"the database, {migration.sha256[:12]}… in the package); the fix is a new "
+                "file, never editing an applied one (ADR 0008)"
             )

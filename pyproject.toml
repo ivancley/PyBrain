@@ -69,8 +69,7 @@ select = [
 ]
 ignore = [
   "E501",
-  "D401",  # a heurística de modo imperativo é do inglês; as docstrings são em português
-  "N818",  # exceções em português usam prefixo "Erro" (docs/glossario.md), não sufixo "Error"
+  "D401",  # docstrings bilíngues (EN + PT) — a heurística de modo imperativo erra no PT
   "D100",  # módulo sem docstring — opcional
   "D104",  # __init__ de pacote sem docstring
   "D105",  # método mágico
@@ -93,10 +92,12 @@ convention = "pep257"
 # Testes e ferramental: exigir docstring ali é ruído, não documentação.
 "tests/**" = ["D"]
 "scripts/**" = ["D", "C90", "PLR"]
+# O app de teste ficou em português (ADR 0010): sua exceção usa o prefixo "Erro".
+"app_de_teste/**" = ["N818"]
 # A superfície pública é rica em argumentos nomeados de propósito (ADR 0001): todo campo
 # opcional de uma versão é argumento nomeado, então o limite de argumentos não se aplica ali.
 "src/memory_lifecycle/api.py" = ["PLR0913"]
-"src/memory_lifecycle/_leituras.py" = ["PLR0913"]  # `recuperar`, da mesma superfície pública
+"src/memory_lifecycle/_reads.py" = ["PLR0913"]  # `recall`, da mesma superfície pública
 
 [tool.ruff.format]
 quote-style = "double"

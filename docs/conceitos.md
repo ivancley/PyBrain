@@ -1,30 +1,30 @@
 # Conceitos
 
 O que a memory-lifecycle guarda, como ela pensa o tempo e o que cada operação
-faz. Os termos vêm de `docs/glossario.md`; as decisões e as alternativas que
-perderam, de `docs/adr/`.
+faz. Os termos vêm de `docs/glossario.md` (prosa em português, identificadores do
+código em inglês); as decisões e as alternativas que perderam, de `docs/adr/`.
 
 Os trechos de código deste guia rodam em sequência na suíte
-(`tests/integration/test_guias.py`), contra um PostgreSQL de verdade. Neles,
-`memoria` é uma `Memoria` já migrada e `relogio` é um relógio de teste que
+(`tests/integration/test_guides.py`), contra um PostgreSQL de verdade. Neles,
+`memory` é uma `Memory` já migrada e `clock` é um relógio de teste que
 avançamos à mão; em produção, a biblioteca usa a hora atual.
 
 ## Memória, versão e quem é dono
 
 Uma **memória** é um fato sobre alguém: "prefere respostas curtas", "trabalha no
-projeto X". Ela pertence a um **dono** (um usuário, um agente) dentro de um
-**tenant** (a organização), e pode ser sobre uma **entidade** e valer num
-**contexto**. Entidade e contexto são ids opacos: a biblioteca não sabe o que
-significam, só filtra por eles.
+projeto X". Ela pertence a um **dono** (`owner_id`: um usuário, um agente) dentro
+de um **tenant** (a organização), e pode ser sobre uma **entidade** (`entity_id`)
+e valer num **contexto** (`context_id`). Entidade e contexto são ids opacos: a
+biblioteca não sabe o que significam, só filtra por eles.
 
 Cada mudança numa memória vira uma **versão** nova. Uma versão nunca é
 reescrita: o único campo que muda numa linha, depois de gravada, é o fim do seu
 tempo de registro.
 
 ```python
-v1 = memoria.lembrar("dono-1", "prefere respostas curtas", categoria="preferencia")
-assert v1.versao_anterior_id is None
-assert v1.valido_ate is None and v1.substituido_em is None  # aberta nos dois eixos
+v1 = memory.remember("owner-1", "prefere respostas curtas", kind="preference")
+assert v1.previous_version_id is None
+assert v1.valid_to is None and v1.superseded_at is None  # aberta nos dois eixos
 ```
 
 ## Os dois eixos de tempo
@@ -33,11 +33,11 @@ Toda versão responde a duas perguntas diferentes:
 
 | eixo | campos | pergunta |
 |---|---|---|
-| **validade** | `valido_de`, `valido_ate` | quando o fato era verdade no mundo? |
-| **registro** | `registrado_em`, `substituido_em` | quando o sistema acreditava nesta versão? |
+| **validade** | `valid_from`, `valid_to` | quando o fato era verdade no mundo? |
+| **registro** | `recorded_at`, `superseded_at` | quando o sistema acreditava nesta versão? |
 
 `None` num fim quer dizer **aberto**, nunca "desconhecido". Os intervalos são
-semiabertos: `[valido_de, valido_ate)`. No instante exato de uma troca, vale a
+semiabertos: `[valid_from, valid_to)`. No instante exato de uma troca, vale a
 versão nova.
 
 Os dois eixos se separam quando a aplicação fica sabendo de algo depois que
@@ -51,132 +51,135 @@ diferentes. As três fecham o registro da versão vigente e inserem versões nov
 
 | operação | situação | o que fica |
 |---|---|---|
-| `encerrar` | o fato era verdade e deixou de ser | uma cópia da vigente com `valido_ate` |
-| `substituir` | um fato novo toma o lugar do antigo | a cópia com `valido_ate`, e a nova a partir dali |
-| `corrigir` | o fato nunca foi verdade: foi gravado errado | a certa, com os mesmos limites de validade |
+| `expire` (encerrar) | o fato era verdade e deixou de ser | uma cópia da vigente com `valid_to` |
+| `supersede` (substituir) | um fato novo toma o lugar do antigo | a cópia com `valid_to`, e a nova a partir dali |
+| `correct` (corrigir) | o fato nunca foi verdade: foi gravado errado | a certa, com os mesmos limites de validade |
 
 ```python
-relogio.avancar(days=150)  # junho
-v2 = memoria.substituir("dono-1", v1.memoria_id, "prefere respostas detalhadas")
-original, copia, nova = memoria.historico("dono-1", v1.memoria_id)
-assert original.substituido_em == relogio()   # a original saiu do registro em junho
-assert copia.valido_ate == relogio()          # a cópia diz: valeu até junho
-assert nova == v2 and v2.versao_anterior_id == copia.versao_id
+clock.advance(days=150)  # junho
+v2 = memory.supersede("owner-1", v1.memory_id, "prefere respostas detalhadas")
+original, copy, new = memory.history("owner-1", v1.memory_id)
+assert original.superseded_at == clock()   # a original saiu do registro em junho
+assert copy.valid_to == clock()            # a cópia diz: valeu até junho
+assert new == v2 and v2.previous_version_id == copy.version_id
 ```
 
-Um fato que deixa de valer sem dar lugar a outro é um `encerrar`:
+Um fato que deixa de valer sem dar lugar a outro é um `expire`:
 
 ```python
-mora = memoria.lembrar("dono-1", "mora em Lisboa", categoria="fato")
-relogio.avancar(days=30)  # julho
-encerrada = memoria.encerrar("dono-1", mora.memoria_id)
-assert encerrada.valido_ate == relogio()
+lives = memory.remember("owner-1", "mora em Lisboa", kind="fact")
+clock.advance(days=30)  # julho
+expired = memory.expire("owner-1", lives.memory_id)
+assert expired.valid_to == clock()
 ```
 
-E um fato gravado errado é um `corrigir`: a validade não muda, só o registro.
+E um fato gravado errado é um `correct`: a validade não muda, só o registro.
 
 ```python
-errada = memoria.lembrar("dono-1", "nasceu em 1990", categoria="fato")
-relogio.avancar(days=10)
-certa = memoria.corrigir("dono-1", errada.memoria_id, "nasceu em 1991")
-assert (certa.valido_de, certa.valido_ate) == (errada.valido_de, errada.valido_ate)
+wrong = memory.remember("owner-1", "nasceu em 1990", kind="fact")
+clock.advance(days=10)
+right = memory.correct("owner-1", wrong.memory_id, "nasceu em 1991")
+assert (right.valid_from, right.valid_to) == (wrong.valid_from, wrong.valid_to)
 ```
 
 ## Os três modos de consulta
 
-`recuperar` responde em um de três modos:
+`recall` responde em um de três modos:
 
 | modo | pergunta |
 |---|---|
 | agora (sem argumento) | o que é verdade agora? |
-| `como_em=D` | o que era verdade em D, pelo que sabemos hoje? |
-| `sabido_em=D` | o que, em D, o sistema sabia ser verdade em D? |
+| `as_of=D` (como em) | o que era verdade em D, pelo que sabemos hoje? |
+| `known_at=D` (sabido em) | o que, em D, o sistema sabia ser verdade em D? |
 
-`sabido_em` é a pergunta da auditoria: o que o agente sabia quando respondeu.
-Uma correção muda `como_em` para trás; não muda `sabido_em`.
+`known_at` é a pergunta da auditoria: o que o agente sabia quando respondeu.
+Uma correção muda `as_of` para trás; não muda `known_at`.
 
 ```python
-def conteudos(**momento):
-    return {r.versao.conteudo for r in memoria.recuperar("dono-1", **momento)}
+def contents(**moment):
+    return {r.version.content for r in memory.recall("owner-1", **moment)}
 
-marco, meados_de_junho = relogio.em(days=60), relogio.em(days=160)
-assert "prefere respostas curtas" in conteudos(como_em=marco)        # era verdade em março
-assert "prefere respostas detalhadas" in conteudos()                 # é verdade agora
-assert "mora em Lisboa" in conteudos(como_em=meados_de_junho)        # morava entre junho e julho
-assert "mora em Lisboa" not in conteudos()                           # não mora mais
+march, mid_june = clock.at(days=60), clock.at(days=160)
+assert "prefere respostas curtas" in contents(as_of=march)        # era verdade em março
+assert "prefere respostas detalhadas" in contents()               # é verdade agora
+assert "mora em Lisboa" in contents(as_of=mid_june)               # morava entre junho e julho
+assert "mora em Lisboa" not in contents()                         # não mora mais
 
-ontem = relogio.em(days=185)   # entre a gravação errada e a correção
-assert "nasceu em 1991" in conteudos(como_em=ontem)    # pelo que sabemos hoje
-assert "nasceu em 1990" in conteudos(sabido_em=ontem)  # o que se sabia então
+yesterday = clock.at(days=185)   # entre a gravação errada e a correção
+assert "nasceu em 1991" in contents(as_of=yesterday)     # pelo que sabemos hoje
+assert "nasceu em 1990" in contents(known_at=yesterday)  # o que se sabia então
 ```
 
-`como_em` e `sabido_em` juntos são recusados com `ErroDeArgumentoInvalido`.
+`as_of` e `known_at` juntos são recusados com `InvalidArgumentError`.
 
 ## O escopo é da aplicação
 
 Quais contextos e entidades estão ativos numa conversa é um dado da aplicação,
-não da memória. `recuperar` recebe esse **escopo** e filtra por ele, de forma
+não da memória. `recall` recebe esse **escopo** e filtra por ele, de forma
 estrita:
 
 | argumento | o que entra naquele eixo |
 |---|---|
-| `contextos=None` (padrão) | tudo: não filtra |
-| `contextos=["p-2027"]` | só as versões do contexto `p-2027` |
-| `contextos=["p-2027", None]` | as de `p-2027` e as sem contexto |
-| `contextos=[]` | nada |
+| `contexts=None` (padrão) | tudo: não filtra |
+| `contexts=["p-2027"]` | só as versões do contexto `p-2027` |
+| `contexts=["p-2027", None]` | as de `p-2027` e as sem contexto |
+| `contexts=[]` | nada |
 
-A mesma regra vale para `entidades`. Tirar um id do escopo não apaga nem encerra
+A mesma regra vale para `entities`. Tirar um id do escopo não apaga nem encerra
 nada: a memória volta quando o id volta. Para dizer que um contexto **acabou**,
-há uma escrita explícita, `invalidar_contexto`.
+há uma escrita explícita, `invalidate_context`.
 
 ```python
-memoria.lembrar("dono-1", "o período 2026 teve atraso", categoria="nota", contexto_id="p-2026")
+memory.remember("owner-1", "o período 2026 teve atraso", kind="note", context_id="p-2026")
 assert not any(
-    r.versao.contexto_id == "p-2026"
-    for r in memoria.recuperar("dono-1", contextos=["p-2027", None])
+    r.version.context_id == "p-2026"
+    for r in memory.recall("owner-1", contexts=["p-2027", None])
 )
-assert memoria.invalidar_contexto("dono-1", "p-2026") == 1
+assert memory.invalidate_context("owner-1", "p-2026") == 1
 ```
 
 ## Status, histórico e esquecer
 
-O status de uma versão (`ATIVA`, `ENCERRADA`, `SUBSTITUIDA`, `CORRIGIDA`) nunca é
-guardado: `derivar_status` o calcula a partir dos limites e da versão seguinte,
-que é a que aponta para ela em `versao_anterior_id`.
+O status de uma versão (`ACTIVE`, `EXPIRED`, `SUPERSEDED`, `CORRECTED` — ativa,
+encerrada, substituída, corrigida) nunca é guardado: `derive_status` o calcula a
+partir dos limites e da versão seguinte, que é a que aponta para ela em
+`previous_version_id`.
 
 ```python
-from memory_lifecycle import Status, derivar_status
+from memory_lifecycle import Status, derive_status
 
-historico = memoria.historico("dono-1", errada.memoria_id)
-sucessoras = {v.versao_anterior_id: v for v in historico}
-status = [derivar_status(v, agora=relogio(), sucessora=sucessoras.get(v.versao_id)) for v in historico]
-assert status == [Status.CORRIGIDA, Status.ATIVA]
+history = memory.history("owner-1", wrong.memory_id)
+successors = {v.previous_version_id: v for v in history}
+statuses = [derive_status(v, now=clock(), successor=successors.get(v.version_id)) for v in history]
+assert statuses == [Status.CORRECTED, Status.ACTIVE]
 ```
 
-`esquecer` é o único apagamento físico, para pedidos de privacidade: apaga toda
-versão do alvo, inclusive o histórico de auditoria. O alvo é exatamente um entre
-uma memória, uma entidade ou tudo do dono.
+`forget` (esquecer) é o único apagamento físico, para pedidos de privacidade:
+apaga toda versão do alvo, inclusive o histórico de auditoria. O alvo é
+exatamente um entre uma memória (`memory_id`), uma entidade (`entity_id`) ou tudo
+do dono (`everything=True`).
 
 ```python
-assert memoria.esquecer("dono-1", memoria_id=errada.memoria_id) == 2
-assert "nasceu em 1990" not in conteudos(sabido_em=ontem)
+assert memory.forget("owner-1", memory_id=wrong.memory_id) == 2
+assert "nasceu em 1990" not in contents(known_at=yesterday)
 ```
 
 ## Concorrência e erros
 
 Duas escritas sobre a mesma versão nunca vencem as duas: a segunda levanta
-`ErroDeConflito`. Para garantir que você substitui o que leu, passe
-`versao_esperada_id`.
+`ConflictError`. Para garantir que você substitui o que leu, passe
+`expected_version_id`.
 
 | erro | quando | o que fazer |
 |---|---|---|
-| `ErroDeArgumentoInvalido` | entrada que o contrato proíbe | corrigir a chamada |
-| `ErroNaoEncontrado` | id desconhecido, de outro dono ou de outro tenant | não diz qual, de propósito |
-| `ErroDeConflito` | outra escrita chegou antes, ou a vigente já estava encerrada | reler com `historico` e decidir |
-| `ErroDeEmbedding` | o provedor de embeddings falhou | tentar de novo ou desistir |
-| `ErroDeDimensaoDeEmbedding` | o provedor gera outra dimensão que a do schema | usar o provedor original ou outro schema |
-| `ErroDeConfiguracao` | schema não migrado, autocommit, pgvector ausente | seguir a mensagem |
-| `ErroDeMigracao` | migração aplicada mudou ou é desconhecida | atualizar a biblioteca; nunca editar migração |
+| `InvalidArgumentError` | entrada que o contrato proíbe | corrigir a chamada |
+| `NotFoundError` | id desconhecido, de outro dono ou de outro tenant | não diz qual, de propósito |
+| `ConflictError` | outra escrita chegou antes, ou a vigente já estava encerrada | reler com `history` e decidir |
+| `EmbeddingError` | o provedor de embeddings falhou | tentar de novo ou desistir |
+| `EmbeddingDimensionError` | o provedor gera outra dimensão que a do schema | usar o provedor original ou outro schema |
+| `ConfigurationError` | schema não migrado, autocommit, pgvector ausente | seguir a mensagem |
+| `MigrationError` | migração aplicada mudou ou é desconhecida | atualizar a biblioteca; nunca editar migração |
 
-Todos herdam de `ErroMemoryLifecycle`. As entradas inválidas são recusadas antes
-de qualquer instrução no banco, para não abortar a transação da aplicação.
+Todos herdam de `MemoryLifecycleError`. As entradas inválidas são recusadas antes
+de qualquer instrução no banco, para não abortar a transação da aplicação. As
+mensagens de erro são em inglês.

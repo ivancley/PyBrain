@@ -1,26 +1,31 @@
-"""Cenário: correção. Corrigir × os três modos de consulta mantém a trilha de auditoria."""
+"""Scenario: correction. Correct × the three query modes keeps the audit trail.
+
+PT: Cenário: correção. Corrigir × os três modos de consulta mantém a trilha de auditoria.
+"""
 
 from __future__ import annotations
 
-from memory_lifecycle import Memoria, Status, derivar_status
-from tests.conftest import RelogioManual
+from memory_lifecycle import Memory, Status, derive_status
+from tests.conftest import ManualClock
 
 
-def test_corrigir_reescreve_o_passado_mas_nao_o_registro(
-    memoria: Memoria, dono: str, relogio: RelogioManual
+def test_correct_rewrites_the_past_but_not_the_record(
+    memory: Memory, owner: str, clock: ManualClock
 ):
-    errada = memoria.lembrar(dono, "nasceu em 1990", categoria="fato")
-    relogio.avancar(days=150)  # junho
-    certa = memoria.corrigir(dono, errada.memoria_id, "nasceu em 1991")
-    relogio.avancar(days=30)
+    wrong = memory.remember(owner, "born in 1990", kind="fact")
+    # June.
+    # PT: Junho.
+    clock.advance(days=150)
+    right = memory.correct(owner, wrong.memory_id, "born in 1991")
+    clock.advance(days=30)
 
-    assert certa.valido_de == errada.valido_de
-    assert [r.versao.conteudo for r in memoria.recuperar(dono)] == ["nasceu em 1991"]
-    marco = memoria.recuperar(dono, como_em=relogio.em(days=60))
-    assert [r.versao.conteudo for r in marco] == ["nasceu em 1991"]
-    maio = memoria.recuperar(dono, sabido_em=relogio.em(days=120))
-    assert [r.versao.conteudo for r in maio] == ["nasceu em 1990"]
+    assert right.valid_from == wrong.valid_from
+    assert [r.version.content for r in memory.recall(owner)] == ["born in 1991"]
+    march = memory.recall(owner, as_of=clock.at(days=60))
+    assert [r.version.content for r in march] == ["born in 1991"]
+    may = memory.recall(owner, known_at=clock.at(days=120))
+    assert [r.version.content for r in may] == ["born in 1990"]
 
-    historico = memoria.historico(dono, errada.memoria_id)
-    assert derivar_status(historico[0], agora=relogio(), sucessora=historico[1]) is Status.CORRIGIDA
-    assert derivar_status(historico[1], agora=relogio()) is Status.ATIVA
+    history = memory.history(owner, wrong.memory_id)
+    assert derive_status(history[0], now=clock(), successor=history[1]) is Status.CORRECTED
+    assert derive_status(history[1], now=clock()) is Status.ACTIVE

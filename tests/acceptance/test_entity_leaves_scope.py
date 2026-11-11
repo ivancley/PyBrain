@@ -1,29 +1,36 @@
-"""Cenário: uma entidade sai do escopo. Fora do escopo não é encerrada; ela volta.
+"""Scenario: an entity leaves the scope. Out of scope is not expired; it comes back.
 
-O escopo é estrito: uma memória sem entidade só entra quando ``entidades`` inclui
-``None`` como membro; ``entidades=[]`` não devolve nada neste eixo.
+The scope is strict: a memory without an entity only comes in when ``entities``
+includes ``None`` as a member; ``entities=[]`` returns nothing on this axis.
+
+PT: Cenário: uma entidade sai do escopo. Fora do escopo não é encerrada; ela volta.
+
+O escopo é estrito: uma memória sem entidade só entra quando ``entities`` inclui
+``None`` como membro; ``entities=[]`` não devolve nada neste eixo.
 """
 
 from __future__ import annotations
 
-from memory_lifecycle import Memoria
+from memory_lifecycle import Memory
 
 
-def test_entidade_fora_do_escopo_some_e_volta(memoria: Memoria, dono: str):
-    sobre = memoria.lembrar(
-        dono, "precisa de apoio extra", categoria="observacao", entidade_id="e-1"
-    )
-    memoria.lembrar(dono, "aprende rápido", categoria="observacao", entidade_id="e-2")
-    memoria.lembrar(dono, "vale para qualquer entidade", categoria="nota")  # sem entidade
+def test_entity_out_of_scope_vanishes_and_comes_back(memory: Memory, owner: str):
+    about = memory.remember(owner, "needs extra support", kind="observation", entity_id="e-1")
+    memory.remember(owner, "learns fast", kind="observation", entity_id="e-2")
+    # No entity.
+    # PT: Sem entidade.
+    memory.remember(owner, "applies to any entity", kind="note")
 
-    sem = memoria.recuperar(dono, entidades=["e-2"])
-    assert [r.versao.entidade_id for r in sem] == ["e-2"]
+    without = memory.recall(owner, entities=["e-2"])
+    assert [r.version.entity_id for r in without] == ["e-2"]
 
-    de_volta = memoria.recuperar(dono, entidades=["e-1", "e-2"])
-    assert {r.versao.entidade_id for r in de_volta} == {"e-1", "e-2"}
+    back = memory.recall(owner, entities=["e-1", "e-2"])
+    assert {r.version.entity_id for r in back} == {"e-1", "e-2"}
 
-    com_sem_entidade = memoria.recuperar(dono, entidades=["e-1", "e-2", None])
-    assert {r.versao.entidade_id for r in com_sem_entidade} == {"e-1", "e-2", None}
+    with_no_entity = memory.recall(owner, entities=["e-1", "e-2", None])
+    assert {r.version.entity_id for r in with_no_entity} == {"e-1", "e-2", None}
 
-    assert memoria.recuperar(dono, entidades=[]) == []
-    assert len(memoria.historico(dono, sobre.memoria_id)) == 1  # sair do escopo não escreve
+    assert memory.recall(owner, entities=[]) == []
+    # Leaving the scope does not write.
+    # PT: Sair do escopo não escreve.
+    assert len(memory.history(owner, about.memory_id)) == 1

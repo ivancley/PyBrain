@@ -1,47 +1,54 @@
-"""Cenário: um contexto muda de período. Memórias de um período não vazam no seguinte.
+"""Scenario: a context changes period. Memories from one period do not leak into the next.
 
-O escopo é estrito: uma memória sem contexto só entra quando ``contextos`` inclui
-``None`` como membro; ``contextos=None`` não filtra por este eixo.
+The scope is strict: a memory without a context only comes in when ``contexts``
+includes ``None`` as a member; ``contexts=None`` does not filter on this axis.
+
+PT: Cenário: um contexto muda de período. Memórias de um período não vazam no seguinte.
+
+O escopo é estrito: uma memória sem contexto só entra quando ``contexts`` inclui
+``None`` como membro; ``contexts=None`` não filtra por este eixo.
 """
 
 from __future__ import annotations
 
-from memory_lifecycle import Memoria
-from tests.conftest import RelogioManual
+from memory_lifecycle import Memory
+from tests.conftest import ManualClock
 
 
-def test_periodo_anterior_sai_do_escopo_mas_nao_some(memoria: Memoria, dono: str):
-    antiga = memoria.lembrar(
-        dono, "tem dificuldade com o tópico A", categoria="observacao", contexto_id="p-2026"
-    )
-    memoria.lembrar(dono, "sempre pontual", categoria="preferencia")  # sem contexto
+def test_previous_period_leaves_scope_but_does_not_vanish(memory: Memory, owner: str):
+    old = memory.remember(owner, "struggles with topic A", kind="observation", context_id="p-2026")
+    # No context.
+    # PT: Sem contexto.
+    memory.remember(owner, "always on time", kind="preference")
 
-    # O período seguinte não enxerga o anterior; a memória sem contexto só entra
-    # quando o escopo diz que None está ativo.
-    assert memoria.recuperar(dono, contextos=["p-2027"]) == []
-    proximo_periodo = memoria.recuperar(dono, contextos=["p-2027", None])
-    assert [r.versao.conteudo for r in proximo_periodo] == ["sempre pontual"]
+    # The next period does not see the previous one; the memory without a context only
+    # comes in when the scope says None is active.
+    # PT: O período seguinte não enxerga o anterior; a memória sem contexto só entra
+    # PT: quando o escopo diz que None está ativo.
+    assert memory.recall(owner, contexts=["p-2027"]) == []
+    next_period = memory.recall(owner, contexts=["p-2027", None])
+    assert [r.version.content for r in next_period] == ["always on time"]
 
-    anterior = memoria.recuperar(dono, contextos=["p-2026", None])
-    assert {r.versao.conteudo for r in anterior} == {
-        "tem dificuldade com o tópico A",
-        "sempre pontual",
+    previous = memory.recall(owner, contexts=["p-2026", None])
+    assert {r.version.content for r in previous} == {
+        "struggles with topic A",
+        "always on time",
     }
-    so_o_periodo = memoria.recuperar(dono, contextos=["p-2026"])
-    assert [r.versao.conteudo for r in so_o_periodo] == ["tem dificuldade com o tópico A"]
-    assert len(memoria.historico(dono, antiga.memoria_id)) == 1  # sair do escopo não escreve
+    period_only = memory.recall(owner, contexts=["p-2026"])
+    assert [r.version.content for r in period_only] == ["struggles with topic A"]
+    # Leaving the scope does not write.
+    # PT: Sair do escopo não escreve.
+    assert len(memory.history(owner, old.memory_id)) == 1
 
 
-def test_invalidar_contexto_e_um_encerrar_explicito(
-    memoria: Memoria, dono: str, relogio: RelogioManual
-):
-    memoria.lembrar(dono, "a", categoria="nota", contexto_id="c-1")
-    memoria.lembrar(dono, "b", categoria="nota", contexto_id="c-1")
-    memoria.lembrar(dono, "c", categoria="nota", contexto_id="c-2")
-    relogio.avancar(days=10)
+def test_invalidate_context_is_an_explicit_expire(memory: Memory, owner: str, clock: ManualClock):
+    memory.remember(owner, "a", kind="note", context_id="c-1")
+    memory.remember(owner, "b", kind="note", context_id="c-1")
+    memory.remember(owner, "c", kind="note", context_id="c-2")
+    clock.advance(days=10)
 
-    assert memoria.invalidar_contexto(dono, "c-1") == 2
-    agora = memoria.recuperar(dono, contextos=["c-1", "c-2"])
-    assert [r.versao.conteudo for r in agora] == ["c"]
-    antes = memoria.recuperar(dono, contextos=["c-1", "c-2"], como_em=relogio.em(days=5))
-    assert {r.versao.conteudo for r in antes} == {"a", "b", "c"}
+    assert memory.invalidate_context(owner, "c-1") == 2
+    now = memory.recall(owner, contexts=["c-1", "c-2"])
+    assert [r.version.content for r in now] == ["c"]
+    before = memory.recall(owner, contexts=["c-1", "c-2"], as_of=clock.at(days=5))
+    assert {r.version.content for r in before} == {"a", "b", "c"}

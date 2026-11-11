@@ -15,6 +15,7 @@ novo o substitui.
 | [0007](0007-driver-compatible-sql-vectors-as-text.md) | SQL para psycopg2 e psycopg 3; vetores como texto | aceito |
 | [0008](0008-append-only-migrations.md) | Migrações SQL que só acrescentam, com tabela de versão | aceito |
 | [0009](0009-exact-vector-search.md) | Busca vetorial exata na 0.1, sem índice aproximado | aceito |
+| [0010](0010-identificadores-em-ingles.md) | Identificadores do código em inglês, prosa em português, comentários bilíngues; migrações reiniciadas uma vez | aceito |
 
 São as decisões da Etapa 1 de `.data/planejamento-macro.md`, escritas em
 2026-11-06. todas foram aceitas pelo dono em 2026-11-06, com a aprovação da Etapa 2; a

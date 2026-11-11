@@ -1,37 +1,44 @@
-"""Cenário: os três modos discordam sobre o mesmo histórico (spec ``recall``).
+"""Scenario: the three modes disagree about the same history (spec ``recall``).
+
+This scenario exposed the contradiction in the first version of ADR 0002: with the
+old version's record closed, ``as_of=March`` did not find the January fact.
+
+PT: Cenário: os três modos discordam sobre o mesmo histórico (spec ``recall``).
 
 Foi este cenário que expôs a contradição da primeira versão do ADR 0002: com a
-antiga de registro fechado, ``como_em=março`` não achava o fato de janeiro.
+antiga de registro fechado, ``as_of=março`` não achava o fato de janeiro.
 """
 
 from __future__ import annotations
 
-from memory_lifecycle import Memoria, Status, derivar_status
-from tests.conftest import RelogioManual
+from memory_lifecycle import Memory, Status, derive_status
+from tests.conftest import ManualClock
 
 
-def test_agora_como_em_e_sabido_em_sobre_uma_cadeia(
-    memoria: Memoria, dono: str, relogio: RelogioManual
-):
-    memoria_id = memoria.lembrar(dono, "curtas", categoria="preferencia").memoria_id
-    relogio.avancar(days=151)  # 1º de junho
-    memoria.substituir(dono, memoria_id, "detalhadas")
-    relogio.avancar(days=30)  # 1º de julho
-    memoria.corrigir(dono, memoria_id, "detalhadas, com fontes")
-    relogio.avancar(days=30)
+def test_now_as_of_and_known_at_over_a_chain(memory: Memory, owner: str, clock: ManualClock):
+    memory_id = memory.remember(owner, "short", kind="preference").memory_id
+    # June 1st.
+    # PT: 1º de junho.
+    clock.advance(days=151)
+    memory.supersede(owner, memory_id, "detailed")
+    # July 1st.
+    # PT: 1º de julho.
+    clock.advance(days=30)
+    memory.correct(owner, memory_id, "detailed, with sources")
+    clock.advance(days=30)
 
-    def conteudos(**momento: object) -> list[str]:
-        return [r.versao.conteudo for r in memoria.recuperar(dono, **momento)]  # type: ignore[arg-type]
+    def contents(**moment: object) -> list[str]:
+        return [r.version.content for r in memory.recall(owner, **moment)]  # type: ignore[arg-type]
 
-    assert conteudos() == ["detalhadas, com fontes"]
-    assert conteudos(como_em=relogio.em(days=60)) == ["curtas"]
-    assert conteudos(como_em=relogio.em(days=165)) == ["detalhadas, com fontes"]
-    assert conteudos(sabido_em=relogio.em(days=120)) == ["curtas"]
-    assert conteudos(sabido_em=relogio.em(days=165)) == ["detalhadas"]
+    assert contents() == ["detailed, with sources"]
+    assert contents(as_of=clock.at(days=60)) == ["short"]
+    assert contents(as_of=clock.at(days=165)) == ["detailed, with sources"]
+    assert contents(known_at=clock.at(days=120)) == ["short"]
+    assert contents(known_at=clock.at(days=165)) == ["detailed"]
 
-    historico = memoria.historico(dono, memoria_id)
-    sucessoras = {v.versao_anterior_id: v for v in historico}
+    history = memory.history(owner, memory_id)
+    successors = {v.previous_version_id: v for v in history}
     status = [
-        derivar_status(v, agora=relogio(), sucessora=sucessoras.get(v.versao_id)) for v in historico
+        derive_status(v, now=clock(), successor=successors.get(v.version_id)) for v in history
     ]
-    assert status == [Status.SUBSTITUIDA, Status.SUBSTITUIDA, Status.CORRIGIDA, Status.ATIVA]
+    assert status == [Status.SUPERSEDED, Status.SUPERSEDED, Status.CORRECTED, Status.ACTIVE]

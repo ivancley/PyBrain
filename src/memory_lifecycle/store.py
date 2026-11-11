@@ -1,217 +1,248 @@
-"""As escritas: uma função por instrução, todas filtradas por tenant e dono.
+"""The writes: one function per statement, all filtered by tenant and owner.
 
-Cada função recebe o cursor da unidade de trabalho e um ``Filtro``; nenhuma abre
+Each function receives the unit of work's cursor and a ``Filter``; none opens a
+connection, decides the transaction or computes an embedding. The
+``test_tenant_filter`` guard checks that every statement here carries ``tenant_id``
+and ``owner_id``.
+
+PT: As escritas: uma função por instrução, todas filtradas por tenant e dono.
+
+Cada função recebe o cursor da unidade de trabalho e um ``Filter``; nenhuma abre
 conexão, decide transação ou calcula embedding. A guarda ``test_tenant_filter``
-confere que toda instrução daqui carrega ``tenant_id`` e ``dono_id``.
+confere que toda instrução daqui carrega ``tenant_id`` e ``owner_id``.
 """
 
 from __future__ import annotations
 
 from datetime import datetime
 
-from memory_lifecycle._sql import COLUNAS, Filtro, linha_para_versao
+from memory_lifecycle._sql import COLUMNS, Filter, row_to_version
 from memory_lifecycle.connection import Cursor
-from memory_lifecycle.exceptions import ErroDeConflito, ErroNaoEncontrado
-from memory_lifecycle.model import VersaoDeMemoria
+from memory_lifecycle.exceptions import ConflictError, NotFoundError
+from memory_lifecycle.model import MemoryVersion
 
-#: As colunas que uma versão nova recebe, na ordem dos INSERT abaixo.
-_COLUNAS_DE_INSERCAO = (
-    "memoria_id, tenant_id, dono_id, categoria, conteudo, entidade_id, contexto_id, origem, "
-    "embedding, modelo_embedding, valido_de, valido_ate, registrado_em, versao_anterior_id"
+#: The columns a new version receives, in the order of the INSERTs below.
+#: PT: As colunas que uma versão nova recebe, na ordem dos INSERT abaixo.
+_INSERT_COLUMNS = (
+    "memory_id, tenant_id, owner_id, kind, content, entity_id, context_id, source, "
+    "embedding, embedding_model, valid_from, valid_to, recorded_at, previous_version_id"
 )
-#: O que a cópia limitada herda da versão de origem, sem trazer o vetor ao Python.
-_HERDADAS = (
-    "memoria_id, tenant_id, dono_id, categoria, conteudo, entidade_id, contexto_id, origem, "
-    "embedding, modelo_embedding, valido_de"
+#: What the bounded copy inherits from the source version, without bringing the vector to Python.
+#: PT: O que a cópia limitada herda da versão de origem, sem trazer o vetor ao Python.
+_INHERITED = (
+    "memory_id, tenant_id, owner_id, kind, content, entity_id, context_id, source, "
+    "embedding, embedding_model, valid_from"
 )
 
-_VIGENTE = """
-SELECT {colunas} FROM {tabela}
-WHERE memoria_id = %s::uuid AND substituido_em IS NULL AND tenant_id = %s AND dono_id = %s
-ORDER BY valido_de DESC
+_CURRENT = """
+SELECT {columns} FROM {table}
+WHERE memory_id = %s::uuid AND superseded_at IS NULL AND tenant_id = %s AND owner_id = %s
+ORDER BY valid_from DESC
 LIMIT 1
 """
 
-_FECHAR_REGISTRO = """
-UPDATE {tabela} SET substituido_em = %s
-WHERE versao_id = %s::uuid AND substituido_em IS NULL AND tenant_id = %s AND dono_id = %s
+_CLOSE_RECORD = """
+UPDATE {table} SET superseded_at = %s
+WHERE version_id = %s::uuid AND superseded_at IS NULL AND tenant_id = %s AND owner_id = %s
 """
 
-_COPIA_LIMITADA = """
-INSERT INTO {tabela} ({inserir})
-SELECT {herdadas}, %s, %s, versao_id FROM {tabela}
-WHERE versao_id = %s::uuid AND tenant_id = %s AND dono_id = %s
-RETURNING {colunas}
+_BOUNDED_COPY = """
+INSERT INTO {table} ({insert})
+SELECT {inherited}, %s, %s, version_id FROM {table}
+WHERE version_id = %s::uuid AND tenant_id = %s AND owner_id = %s
+RETURNING {columns}
 """
 
-_ENCERRAR_CONTEXTO = """
-WITH fechadas AS (
-  UPDATE {tabela} SET substituido_em = %s
-  WHERE contexto_id = %s AND substituido_em IS NULL AND (valido_ate IS NULL OR valido_ate > %s)
-    AND tenant_id = %s AND dono_id = %s
-  RETURNING versao_id, {herdadas}
-), copias AS (
-  INSERT INTO {tabela} ({inserir})
-  SELECT {herdadas}, %s, %s, versao_id FROM fechadas WHERE valido_de < %s
+_EXPIRE_CONTEXT = """
+WITH closed AS (
+  UPDATE {table} SET superseded_at = %s
+  WHERE context_id = %s AND superseded_at IS NULL AND (valid_to IS NULL OR valid_to > %s)
+    AND tenant_id = %s AND owner_id = %s
+  RETURNING version_id, {inherited}
+), copies AS (
+  INSERT INTO {table} ({insert})
+  SELECT {inherited}, %s, %s, version_id FROM closed WHERE valid_from < %s
   RETURNING 1
 )
-SELECT count(*) FROM fechadas
+SELECT count(*) FROM closed
 """
 
-#: Rodadas de ``_ENCERRAR_CONTEXTO`` antes de desistir de um contexto que não para
-#: de receber escritas.
-_RODADAS_DE_ENCERRAMENTO = 5
+#: Rounds of ``_EXPIRE_CONTEXT`` before giving up on a context that keeps receiving writes.
+#: PT: Rodadas de ``_EXPIRE_CONTEXT`` antes de desistir de um contexto que não para
+#: PT: de receber escritas.
+_EXPIRE_ROUNDS = 5
 
-_APAGAR_MEMORIA = """
-DELETE FROM {tabela} WHERE memoria_id = %s::uuid AND tenant_id = %s AND dono_id = %s
+_DELETE_MEMORY = """
+DELETE FROM {table} WHERE memory_id = %s::uuid AND tenant_id = %s AND owner_id = %s
 """
 
-_APAGAR_POR_ENTIDADE = """
-DELETE FROM {tabela}
-WHERE tenant_id = %s AND dono_id = %s AND memoria_id IN (
-  SELECT memoria_id FROM {tabela} WHERE entidade_id = %s AND tenant_id = %s AND dono_id = %s
+_DELETE_BY_ENTITY = """
+DELETE FROM {table}
+WHERE tenant_id = %s AND owner_id = %s AND memory_id IN (
+  SELECT memory_id FROM {table} WHERE entity_id = %s AND tenant_id = %s AND owner_id = %s
 )
 """
 
-_APAGAR_TUDO = """
-DELETE FROM {tabela} WHERE tenant_id = %s AND dono_id = %s
+_DELETE_ALL = """
+DELETE FROM {table} WHERE tenant_id = %s AND owner_id = %s
 """
 
-_INSERIR = """
-INSERT INTO {tabela} (
-  memoria_id, tenant_id, dono_id, categoria, conteudo, entidade_id, contexto_id, origem,
-  embedding, modelo_embedding, valido_de, valido_ate, registrado_em, versao_anterior_id
+_INSERT = """
+INSERT INTO {table} (
+  memory_id, tenant_id, owner_id, kind, content, entity_id, context_id, source,
+  embedding, embedding_model, valid_from, valid_to, recorded_at, previous_version_id
 ) VALUES (
   COALESCE(%s::uuid, gen_random_uuid()), %s, %s, %s, %s, %s, %s, %s,
   %s::vector, %s, %s, %s, %s, %s::uuid
 )
-RETURNING {colunas}
+RETURNING {columns}
 """
 
 
-def inserir(  # noqa: PLR0913 — uma coluna por argumento, todos nomeados
+def insert(  # noqa: PLR0913 — one column per argument, all keyword-only / uma coluna por argumento
     cur: Cursor,
-    f: Filtro,
+    f: Filter,
     *,
-    memoria_id: str | None,
-    conteudo: str,
-    categoria: str,
-    entidade_id: str | None,
-    contexto_id: str | None,
-    origem: str | None,
-    vetor: str,
-    modelo: str,
-    valido_de: datetime,
-    valido_ate: datetime | None,
-    registrado_em: datetime,
-    versao_anterior_id: str | None,
-) -> VersaoDeMemoria:
-    """Insere uma versão; sem ``memoria_id``, nasce uma memória nova."""
+    memory_id: str | None,
+    content: str,
+    kind: str,
+    entity_id: str | None,
+    context_id: str | None,
+    source: str | None,
+    vector: str,
+    model: str,
+    valid_from: datetime,
+    valid_to: datetime | None,
+    recorded_at: datetime,
+    previous_version_id: str | None,
+) -> MemoryVersion:
+    """Insert a version; without ``memory_id``, a new memory is born.
+
+    PT: Insere uma versão; sem ``memory_id``, nasce uma memória nova.
+    """
     cur.execute(
-        _INSERIR.format(tabela=f.tabela, colunas=COLUNAS),
+        _INSERT.format(table=f.table, columns=COLUMNS),
         (
-            memoria_id,
+            memory_id,
             f.tenant_id,
-            f.dono_id,
-            categoria,
-            conteudo,
-            entidade_id,
-            contexto_id,
-            origem,
-            vetor,
-            modelo,
-            valido_de,
-            valido_ate,
-            registrado_em,
-            versao_anterior_id,
+            f.owner_id,
+            kind,
+            content,
+            entity_id,
+            context_id,
+            source,
+            vector,
+            model,
+            valid_from,
+            valid_to,
+            recorded_at,
+            previous_version_id,
         ),
     )
-    return linha_para_versao(cur.fetchone())
+    return row_to_version(cur.fetchone())
 
 
-def buscar_vigente(cur: Cursor, f: Filtro, memoria_id: str) -> VersaoDeMemoria:
-    """A versão vigente: registro aberto e maior ``valido_de`` (ADR 0002)."""
+def fetch_current(cur: Cursor, f: Filter, memory_id: str) -> MemoryVersion:
+    """The current version: open record and greatest ``valid_from`` (ADR 0002).
+
+    PT: A versão vigente: registro aberto e maior ``valid_from`` (ADR 0002).
+    """
     cur.execute(
-        _VIGENTE.format(colunas=COLUNAS, tabela=f.tabela), (memoria_id, f.tenant_id, f.dono_id)
+        _CURRENT.format(columns=COLUMNS, table=f.table), (memory_id, f.tenant_id, f.owner_id)
     )
-    linha = cur.fetchone()
-    if linha is None:
-        raise ErroNaoEncontrado("memória não encontrada para este tenant e dono")
-    return linha_para_versao(linha)
+    row = cur.fetchone()
+    if row is None:
+        raise NotFoundError("memory not found for this tenant and owner")
+    return row_to_version(row)
 
 
-def fechar_registro(cur: Cursor, f: Filtro, versao_id: str, agora: datetime) -> None:
-    """Fecha ``substituido_em``; se outro escritor fechou antes, ``ErroDeConflito``.
+def close_record(cur: Cursor, f: Filter, version_id: str, now: datetime) -> None:
+    """Close ``superseded_at``; if another writer closed it first, ``ConflictError``.
+
+    This is the concurrency lock: the second writer waits for the row lock and, after
+    the first one commits, re-evaluates the ``WHERE`` and affects zero rows.
+
+    PT: Fecha ``superseded_at``; se outro escritor fechou antes, ``ConflictError``.
 
     É a trava de concorrência: o segundo escritor espera o lock da linha e, depois
     do commit do primeiro, reavalia o ``WHERE`` e afeta zero linhas.
     """
-    cur.execute(
-        _FECHAR_REGISTRO.format(tabela=f.tabela), (agora, versao_id, f.tenant_id, f.dono_id)
-    )
+    cur.execute(_CLOSE_RECORD.format(table=f.table), (now, version_id, f.tenant_id, f.owner_id))
     if cur.rowcount != 1:
-        raise ErroDeConflito(
-            "outra escrita mudou esta memória primeiro; releia com historico e decida"
+        raise ConflictError(
+            "another write changed this memory first; reread with history and decide"
         )
 
 
-def inserir_copia_limitada(
-    cur: Cursor, f: Filtro, origem_id: str, valido_ate: datetime, agora: datetime
-) -> VersaoDeMemoria:
-    """Insere a cópia de ``origem_id`` com ``valido_ate``, ligada a ela; o vetor fica no banco."""
+def insert_bounded_copy(
+    cur: Cursor, f: Filter, from_version_id: str, valid_to: datetime, now: datetime
+) -> MemoryVersion:
+    """Insert the copy of ``from_version_id`` with ``valid_to``, linked to it; the vector stays in the database.
+
+    PT: Insere a cópia de ``from_version_id`` com ``valid_to``, ligada a ela; o vetor fica no banco.
+    """
     cur.execute(
-        _COPIA_LIMITADA.format(
-            tabela=f.tabela, inserir=_COLUNAS_DE_INSERCAO, herdadas=_HERDADAS, colunas=COLUNAS
+        _BOUNDED_COPY.format(
+            table=f.table, insert=_INSERT_COLUMNS, inherited=_INHERITED, columns=COLUMNS
         ),
-        (valido_ate, agora, origem_id, f.tenant_id, f.dono_id),
+        (valid_to, now, from_version_id, f.tenant_id, f.owner_id),
     )
-    return linha_para_versao(cur.fetchone())
+    return row_to_version(cur.fetchone())
 
 
-def encerrar_contexto(
-    cur: Cursor, f: Filtro, contexto_id: str, valido_ate: datetime, agora: datetime
+def expire_context(
+    cur: Cursor, f: Filter, context_id: str, valid_to: datetime, now: datetime
 ) -> int:
-    """Encerra em ``valido_ate`` toda crença atual do contexto que valeria depois; devolve quantas.
+    """Expire at ``valid_to`` every current belief of the context that would hold afterwards; return how many.
+
+    Closes each one's record and, for those already started, inserts the bounded copy;
+    those that would only start later get no copy, because they never held. Runs at
+    least twice and repeats until nothing changes: under READ COMMITTED the new version
+    of a concurrent ``supersede`` is not in the first round's snapshot.
+
+    PT: Encerra em ``valid_to`` toda crença atual do contexto que valeria depois; devolve quantas.
 
     Fecha o registro de cada uma e, nas que já começaram, insere a cópia limitada;
     as que só começariam depois ficam sem cópia, porque nunca valeram. Roda ao
     menos duas vezes e repete até nada mudar: em READ COMMITTED a versão nova de
-    um ``substituir`` concorrente não está no instantâneo da primeira rodada.
+    um ``supersede`` concorrente não está no instantâneo da primeira rodada.
     """
     total = 0
-    for rodada in range(_RODADAS_DE_ENCERRAMENTO):
+    for round_number in range(_EXPIRE_ROUNDS):
         cur.execute(
-            _ENCERRAR_CONTEXTO.format(
-                tabela=f.tabela, inserir=_COLUNAS_DE_INSERCAO, herdadas=_HERDADAS
-            ),
-            (agora, contexto_id, valido_ate, f.tenant_id, f.dono_id, valido_ate, agora, valido_ate),
+            _EXPIRE_CONTEXT.format(table=f.table, insert=_INSERT_COLUMNS, inherited=_INHERITED),
+            (now, context_id, valid_to, f.tenant_id, f.owner_id, valid_to, now, valid_to),
         )
-        linha = cur.fetchone()
-        encerradas = int(linha[0]) if linha else 0
-        # Uma rodada que esperou o lock de outro escritor pode não encerrar nada e,
-        # ainda assim, haver a versão nova dele: só a rodada seguinte a enxerga.
-        if encerradas == 0 and rodada > 0:
+        row = cur.fetchone()
+        expired = int(row[0]) if row else 0
+        # A round that waited for another writer's lock may expire nothing and still
+        # leave that writer's new version behind: only the next round sees it.
+        # PT: Uma rodada que esperou o lock de outro escritor pode não encerrar nada e,
+        # PT: ainda assim, haver a versão nova dele: só a rodada seguinte a enxerga.
+        if expired == 0 and round_number > 0:
             return total
-        total += encerradas
-    raise ErroDeConflito(
-        f"o contexto {contexto_id!r} continuou recebendo escritas durante a invalidação; "
-        "tente de novo"
+        total += expired
+    raise ConflictError(
+        f"context {context_id!r} kept receiving writes during the invalidation; try again"
     )
 
 
-def apagar(
-    cur: Cursor, f: Filtro, *, memoria_id: str | None, entidade_id: str | None, tudo: bool
+def delete(
+    cur: Cursor, f: Filter, *, memory_id: str | None, entity_id: str | None, everything: bool
 ) -> int:
-    """Apaga fisicamente toda versão do alvo; por entidade, a memória inteira sai."""
-    if memoria_id is not None:
-        cur.execute(_APAGAR_MEMORIA.format(tabela=f.tabela), (memoria_id, f.tenant_id, f.dono_id))
-    elif entidade_id is not None:
+    """Physically delete every version of the target; by entity, the whole memory goes.
+
+    PT: Apaga fisicamente toda versão do alvo; por entidade, a memória inteira sai.
+    """
+    if memory_id is not None:
+        cur.execute(_DELETE_MEMORY.format(table=f.table), (memory_id, f.tenant_id, f.owner_id))
+    elif entity_id is not None:
         cur.execute(
-            _APAGAR_POR_ENTIDADE.format(tabela=f.tabela),
-            (f.tenant_id, f.dono_id, entidade_id, f.tenant_id, f.dono_id),
+            _DELETE_BY_ENTITY.format(table=f.table),
+            (f.tenant_id, f.owner_id, entity_id, f.tenant_id, f.owner_id),
         )
-    elif tudo:
-        cur.execute(_APAGAR_TUDO.format(tabela=f.tabela), (f.tenant_id, f.dono_id))
+    elif everything:
+        cur.execute(_DELETE_ALL.format(table=f.table), (f.tenant_id, f.owner_id))
     else:
         return 0
     return cur.rowcount

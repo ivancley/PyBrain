@@ -7,55 +7,56 @@ provedor de LLM no núcleo.
 > Status: 0.1.0 implementada e testada contra PostgreSQL 16 + pgvector, com
 > psycopg 3, psycopg2, pool do psycopg, Django e SQLAlchemy. Ainda **não
 > publicada** no PyPI: instale a partir do repositório. Vocabulário em
-> `docs/glossario.md`; decisões em `docs/architecture.md` e `docs/adr/`.
+> `docs/glossario.md` (os identificadores do código são em inglês; a prosa, em
+> português); decisões em `docs/architecture.md` e `docs/adr/`.
 
 ## Exemplo
 
 ```python
 import os
 
-from memory_lifecycle import Memoria, ProvedorDeEmbeddingsFalso
-from memory_lifecycle.connection.dsn import ProvedorDSN
+from memory_lifecycle import FakeEmbeddingProvider, Memory
+from memory_lifecycle.connection.dsn import DSNProvider
 
-memoria = Memoria(
-    conexao=ProvedorDSN(os.environ["DATABASE_URL"]),
-    embeddings=ProvedorDeEmbeddingsFalso(),  # troque pelo seu provedor de embeddings
+memory = Memory(
+    connection=DSNProvider(os.environ["DATABASE_URL"]),
+    embeddings=FakeEmbeddingProvider(),  # troque pelo seu provedor de embeddings
     tenant_id="org-1",
 )
-memoria.migrar()  # schema próprio dentro do seu banco; idempotente
+memory.migrate()  # schema próprio dentro do seu banco; idempotente
 
-v1 = memoria.lembrar("agente-7", "Prefere respostas curtas", categoria="preferencia")
-memoria.substituir("agente-7", v1.memoria_id, "Prefere respostas detalhadas")
+v1 = memory.remember("agent-7", "Prefere respostas curtas", kind="preference")
+memory.supersede("agent-7", v1.memory_id, "Prefere respostas detalhadas")
 
-agora = memoria.recuperar("agente-7", consulta="estilo de resposta", contextos=[None])
-entao = memoria.recuperar("agente-7", como_em=v1.registrado_em)
-sabido = memoria.recuperar("agente-7", sabido_em=v1.registrado_em)
-print([r.versao.conteudo for r in agora])   # ['Prefere respostas detalhadas']
-print([r.versao.conteudo for r in entao])   # ['Prefere respostas curtas']
-print([r.versao.conteudo for r in sabido])  # ['Prefere respostas curtas']
+now = memory.recall("agent-7", query="estilo de resposta", contexts=[None])
+then = memory.recall("agent-7", as_of=v1.recorded_at)
+known = memory.recall("agent-7", known_at=v1.recorded_at)
+print([r.version.content for r in now])    # ['Prefere respostas detalhadas']
+print([r.version.content for r in then])   # ['Prefere respostas curtas']
+print([r.version.content for r in known])  # ['Prefere respostas curtas']
 
-memoria.esquecer("agente-7", tudo=True)  # apagamento físico de toda versão
+memory.forget("agent-7", everything=True)  # apagamento físico de toda versão
 ```
 
 ## Conceitos
 
 Toda memória tem **dois eixos de tempo**: quando o fato era verdade
-(`valido_de`, `valido_ate`) e quando o sistema acreditava nele (`registrado_em`,
-`substituido_em`). Uma linha nunca é reescrita: a única mudança possível é fechar
+(`valid_from`, `valid_to`) e quando o sistema acreditava nele (`recorded_at`,
+`superseded_at`). Uma linha nunca é reescrita: a única mudança possível é fechar
 o seu tempo de registro.
 
 | operação | quando usar | o que fica |
 |---|---|---|
-| `encerrar` | o fato era verdade e deixou de ser | a validade termina; o passado continua |
-| `substituir` | um fato novo toma o lugar do antigo | o antigo até o instante da troca, o novo dali em diante |
-| `corrigir` | o fato nunca foi verdade | o certo no lugar do errado; o errado só em `sabido_em` |
-| `esquecer` | um pedido de privacidade | nada: toda versão do alvo é apagada |
+| `expire` | o fato era verdade e deixou de ser | a validade termina; o passado continua |
+| `supersede` | um fato novo toma o lugar do antigo | o antigo até o instante da troca, o novo dali em diante |
+| `correct` | o fato nunca foi verdade | o certo no lugar do errado; o errado só em `known_at` |
+| `forget` | um pedido de privacidade | nada: toda versão do alvo é apagada |
 
-`recuperar` responde em três modos: **agora**, **`como_em=D`** (o que era verdade
-em D, pelo que sabemos hoje) e **`sabido_em=D`** (o que, em D, sabíamos ser
+`recall` responde em três modos: **agora**, **`as_of=D`** (o que era verdade
+em D, pelo que sabemos hoje) e **`known_at=D`** (o que, em D, sabíamos ser
 verdade em D — o que o agente sabia quando respondeu).
 
-O **escopo é da aplicação e é estrito**: `contextos` e `entidades` listam os ids
+O **escopo é da aplicação e é estrito**: `contexts` e `entities` listam os ids
 ativos na consulta, e `None` na lista inclui as memórias sem contexto ou sem
 entidade. Tirar um id do escopo não apaga nada. O escopo também é o que mantém a
 busca vetorial barata em donos com muitas memórias (ADR 0009).
@@ -66,13 +67,13 @@ A biblioteca nunca abre um segundo pool: ela recebe um provedor de conexão.
 
 | provedor | extra | modo de transação |
 |---|---|---|
-| `ProvedorDSN(dsn)` | `psycopg` | própria: commit por operação |
-| `ProvedorPoolPsycopg(pool)` | `psycopg` | própria, com uma conexão do pool do app |
-| `ProvedorDjango(alias)` | `django` | participar: a escrita entra no `atomic()` do request (fora de um, faz commit sozinha) |
-| `ProvedorSQLAlchemy(engine)` | `sqlalchemy` | própria |
-| `ProvedorSQLAlchemy.de_sessao(sessao)` | `sqlalchemy` | participar: um savepoint por operação; vale no `sessao.commit()` |
+| `DSNProvider(dsn)` | `psycopg` | própria (`OWN`): commit por operação |
+| `PsycopgPoolProvider(pool)` | `psycopg` | própria (`OWN`), com uma conexão do pool do app |
+| `DjangoProvider(alias)` | `django` | participar (`PARTICIPATE`): a escrita entra no `atomic()` do request (fora de um, faz commit sozinha) |
+| `SQLAlchemyProvider(engine)` | `sqlalchemy` | própria (`OWN`) |
+| `SQLAlchemyProvider.from_session(session)` | `sqlalchemy` | participar (`PARTICIPATE`): um savepoint por operação; vale no `session.commit()` |
 
-`carregar_provedor()` lê `MEMORY_LIFECYCLE_PROVEDOR_CONEXAO` (`pacote.modulo:funcao`)
+`load_provider()` lê `MEMORY_LIFECYCLE_CONNECTION_PROVIDER` (`pacote.modulo:funcao`)
 quando o app prefere configurar por ambiente. O núcleo não tem dependência
 obrigatória; cada adaptador importa a sua sob demanda.
 
@@ -82,8 +83,8 @@ obrigatória; cada adaptador importa a sua sob demanda.
   de consulta, o escopo, o status e os erros. Os trechos rodam na suíte.
 - `docs/integracao.md` — instalação, cada provedor de conexão (com Django do
   começo ao fim), o seu provedor de embeddings, desempenho e testes.
-- `exemplos/fluxo_do_agente.py` — recuperar, montar o contexto, responder e gravar
-  o que o agente propôs; `exemplos/django_app/` — o mesmo fluxo numa view Django.
+- `examples/agent_flow.py` — recuperar, montar o contexto, responder e gravar
+  o que o agente propôs; `examples/django_app/` — o mesmo fluxo numa view Django.
 - `docs/architecture.md` e `docs/adr/` — as decisões e as alternativas que perderam.
 
 ## Desenvolvimento

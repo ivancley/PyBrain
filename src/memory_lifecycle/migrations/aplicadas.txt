@@ -1,4 +1,0 @@
-# Manifesto das migrações publicadas: número e sha256 do arquivo cru.
-# Lido só pela guarda tests/guards/test_migrations_append_only.py (ADR 0008).
-# Uma linha entra quando a migração é congelada; daí em diante o arquivo nunca muda.
-0001 a91ae6f35ed62c52d77b87a27aa54c7d9ad01ab21486378aa66275a2af1a7669

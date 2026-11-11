@@ -36,7 +36,7 @@ guarda que fica verde quando a regra é quebrada não é guarda.
 | `test_review_template` | `code-review/comment.md`: um só formato de revisão, seja quem for que publique |
 | `test_file_size` | `CLAUDE.md` § Tamanho de arquivo: 500 linhas é dívida declarada em `ABOVE_500` |
 | `test_core_dependencies` | `CLAUDE.md` regra 4, ADR 0004/0007: nenhum import de terceiros no nível do módulo no núcleo; os preguiçosos só em adaptadores |
-| `test_tenant_filter` | `CLAUDE.md` regra 1: toda instrução de `store.py` e `retrieval.py` filtra `tenant_id` e `dono_id` |
-| `test_migrations_append_only` | `CLAUDE.md` regra 7, ADR 0008: toda migração do manifesto `aplicadas.txt` mantém o sha256 |
+| `test_tenant_filter` | `CLAUDE.md` regra 1: toda instrução de `store.py` e `retrieval.py` filtra `tenant_id` e `owner_id` |
+| `test_migrations_append_only` | `CLAUDE.md` regra 7, ADR 0008: toda migração do manifesto `applied.txt` mantém o sha256 |
 
 

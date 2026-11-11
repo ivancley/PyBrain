@@ -1,4 +1,21 @@
-"""`CLAUDE.md` regra 4 e ADR 0004/0007: o núcleo tem zero dependências obrigatórias.
+"""`CLAUDE.md` rule 4 and ADR 0004/0007: the core has zero mandatory dependencies.
+
+Two checks:
+
+- **By AST:** every import outside a function, in any module of
+  `src/memory_lifecycle`, is from the stdlib or from the package itself. A
+  `try: import psycopg` at the top of the module counts as top level, even indented. An
+  adapter (in `connection/` or `embeddings/`) only imports its dependency inside a
+  function.
+- **By execution:** importing the package and each of its modules, in a clean Python
+  process, loads no third-party module. It runs in a subprocess because, inside the
+  suite, the `conftest` has already imported everything and the `sys.modules` diff
+  would come out empty (reports/review-change-core.md, bloqueador 3).
+
+Guard contract (`tests/guards/README.md`): the set comes from `rglob`, exceptions
+carry a written reason, an orphan exception fails.
+
+PT: `CLAUDE.md` regra 4 e ADR 0004/0007: o núcleo tem zero dependências obrigatórias.
 
 Duas checagens:
 
@@ -24,106 +41,110 @@ import subprocess
 import sys
 from pathlib import Path
 
-RAIZ = Path(__file__).resolve().parents[2]
-PACOTE = RAIZ / "src" / "memory_lifecycle"
-PASTAS_DE_ADAPTADOR = ("connection", "embeddings")
-FUNCOES = (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)
+ROOT = Path(__file__).resolve().parents[2]
+PACKAGE = ROOT / "src" / "memory_lifecycle"
+ADAPTER_FOLDERS = ("connection", "embeddings")
+FUNCTIONS = (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)
 
-# Caminho relativo ao pacote → por que um import de terceiros fora de função é legítimo.
-PERMITIDOS_NO_TOPO: dict[str, str] = {}
-
-
-def _modulos() -> list[Path]:
-    return sorted(PACOTE.rglob("*.py"))
+# Path relative to the package → why a third-party import outside a function is legitimate.
+# PT: Caminho relativo ao pacote → por que um import de terceiros fora de função é legítimo.
+ALLOWED_AT_TOP: dict[str, str] = {}
 
 
-def _e_da_casa(nome: str) -> bool:
-    raiz = nome.split(".")[0]
-    return raiz == "memory_lifecycle" or raiz in sys.stdlib_module_names
+def _modules() -> list[Path]:
+    return sorted(PACKAGE.rglob("*.py"))
 
 
-def _importacoes(arvore: ast.AST) -> list[tuple[str, bool]]:
-    """(nome do módulo, fora de qualquer função) para todo import da árvore."""
-    pais: dict[ast.AST, ast.AST] = {}
-    for no in ast.walk(arvore):
-        for filho in ast.iter_child_nodes(no):
-            pais[filho] = no
+def _is_in_house(name: str) -> bool:
+    root = name.split(".")[0]
+    return root == "memory_lifecycle" or root in sys.stdlib_module_names
 
-    def fora_de_funcao(no: ast.AST) -> bool:
-        while no in pais:
-            no = pais[no]
-            if isinstance(no, FUNCOES):
+
+def _imports(tree: ast.AST) -> list[tuple[str, bool]]:
+    """(module name, outside any function) for every import in the tree.
+
+    PT: (nome do módulo, fora de qualquer função) para todo import da árvore.
+    """
+    parents: dict[ast.AST, ast.AST] = {}
+    for node in ast.walk(tree):
+        for child in ast.iter_child_nodes(node):
+            parents[child] = node
+
+    def outside_function(node: ast.AST) -> bool:
+        while node in parents:
+            node = parents[node]
+            if isinstance(node, FUNCTIONS):
                 return False
         return True
 
-    achadas: list[tuple[str, bool]] = []
-    for no in ast.walk(arvore):
-        if isinstance(no, ast.Import):
-            achadas.extend((alias.name, fora_de_funcao(no)) for alias in no.names)
-        elif isinstance(no, ast.ImportFrom) and no.level == 0 and no.module:
-            achadas.append((no.module, fora_de_funcao(no)))
-    return achadas
+    found: list[tuple[str, bool]] = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            found.extend((alias.name, outside_function(node)) for alias in node.names)
+        elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
+            found.append((node.module, outside_function(node)))
+    return found
 
 
-def test_a_varredura_alcanca_algo():
-    assert len(_modulos()) >= 10
+def test_the_scan_reaches_something():
+    assert len(_modules()) >= 10
 
 
-def test_imports_fora_de_funcao_sao_da_stdlib_ou_da_casa():
-    infratores: dict[str, list[str]] = {}
-    for modulo in _modulos():
-        relativo = str(modulo.relative_to(PACOTE))
-        if relativo in PERMITIDOS_NO_TOPO:
+def test_imports_outside_functions_are_stdlib_or_in_house():
+    offenders: dict[str, list[str]] = {}
+    for module in _modules():
+        relative = str(module.relative_to(PACKAGE))
+        if relative in ALLOWED_AT_TOP:
             continue
-        arvore = ast.parse(modulo.read_text(encoding="utf-8"))
-        ruins = [nome for nome, topo in _importacoes(arvore) if topo and not _e_da_casa(nome)]
-        if ruins:
-            infratores[relativo] = ruins
-    assert not infratores, f"import de terceiros fora de função no núcleo: {infratores}"
+        tree = ast.parse(module.read_text(encoding="utf-8"))
+        bad = [name for name, top in _imports(tree) if top and not _is_in_house(name)]
+        if bad:
+            offenders[relative] = bad
+    assert not offenders, f"third-party import outside a function in the core: {offenders}"
 
 
-def test_imports_preguicosos_de_terceiros_so_em_adaptadores():
-    infratores: dict[str, list[str]] = {}
-    for modulo in _modulos():
-        relativo = modulo.relative_to(PACOTE)
-        if relativo.parts[0] in PASTAS_DE_ADAPTADOR:
+def test_lazy_third_party_imports_only_in_adapters():
+    offenders: dict[str, list[str]] = {}
+    for module in _modules():
+        relative = module.relative_to(PACKAGE)
+        if relative.parts[0] in ADAPTER_FOLDERS:
             continue
-        arvore = ast.parse(modulo.read_text(encoding="utf-8"))
-        ruins = [nome for nome, topo in _importacoes(arvore) if not topo and not _e_da_casa(nome)]
-        if ruins:
-            infratores[str(relativo)] = ruins
-    assert not infratores, f"um módulo do núcleo importa pacote de terceiros: {infratores}"
+        tree = ast.parse(module.read_text(encoding="utf-8"))
+        bad = [name for name, top in _imports(tree) if not top and not _is_in_house(name)]
+        if bad:
+            offenders[str(relative)] = bad
+    assert not offenders, f"a core module imports a third-party package: {offenders}"
 
 
-def test_importar_o_pacote_num_processo_limpo_nao_carrega_terceiros():
-    nomes = [
-        ".".join(("memory_lifecycle", *m.relative_to(PACOTE).with_suffix("").parts)).removesuffix(
+def test_importing_the_package_in_a_clean_process_loads_no_third_party():
+    names = [
+        ".".join(("memory_lifecycle", *m.relative_to(PACKAGE).with_suffix("").parts)).removesuffix(
             ".__init__"
         )
-        for m in _modulos()
+        for m in _modules()
     ]
-    codigo = (
+    code = (
         "import importlib, json, sys\n"
-        "antes = set(sys.modules)\n"
-        f"for nome in {nomes!r}:\n"
-        "    importlib.import_module(nome)\n"
-        "novos = sorted({m.split('.')[0] for m in set(sys.modules) - antes})\n"
-        "print(json.dumps(novos))\n"
+        "before = set(sys.modules)\n"
+        f"for name in {names!r}:\n"
+        "    importlib.import_module(name)\n"
+        "new = sorted({m.split('.')[0] for m in set(sys.modules) - before})\n"
+        "print(json.dumps(new))\n"
     )
-    ambiente = {**os.environ, "PYTHONPATH": str(RAIZ / "src")}
-    saida = subprocess.run(
-        [sys.executable, "-c", codigo], capture_output=True, text=True, env=ambiente, check=True
+    environment = {**os.environ, "PYTHONPATH": str(ROOT / "src")}
+    output = subprocess.run(
+        [sys.executable, "-c", code], capture_output=True, text=True, env=environment, check=True
     )
-    carregados = [
-        nome
-        for nome in json.loads(saida.stdout)
-        if not _e_da_casa(nome) and not nome.startswith("_")
+    loaded = [
+        name
+        for name in json.loads(output.stdout)
+        if not _is_in_house(name) and not name.startswith("_")
     ]
-    assert not carregados, f"importar memory_lifecycle carregou: {carregados}"
+    assert not loaded, f"importing memory_lifecycle loaded: {loaded}"
 
 
-def test_excecoes_nao_sao_orfas():
-    orfas = [caminho for caminho in PERMITIDOS_NO_TOPO if not (PACOTE / caminho).exists()]
-    assert not orfas, f"PERMITIDOS_NO_TOPO cita um módulo que não existe mais: {orfas}"
-    curtas = [caminho for caminho, razao in PERMITIDOS_NO_TOPO.items() if len(razao) < 30]
-    assert not curtas, f"exceção sem razão escrita: {curtas}"
+def test_exceptions_are_not_orphans():
+    orphans = [path for path in ALLOWED_AT_TOP if not (PACKAGE / path).exists()]
+    assert not orphans, f"ALLOWED_AT_TOP names a module that no longer exists: {orphans}"
+    short = [path for path, reason in ALLOWED_AT_TOP.items() if len(reason) < 30]
+    assert not short, f"exception without a written reason: {short}"

@@ -1,7 +1,13 @@
-"""``ProvedorDSN``: uma conexão própria por operação, a partir de um DSN.
+"""``DSNProvider``: one connection of its own per operation, from a DSN.
+
+For scripts, jobs and tests, where there is no application pool to borrow from. Opens
+with psycopg 3 (``psycopg`` extra), always in ``OWN`` mode and with autocommit off,
+and closes the connection at the end of each operation.
+
+PT: ``DSNProvider``: uma conexão própria por operação, a partir de um DSN.
 
 Para scripts, jobs e testes, onde não há pool da aplicação para emprestar. Abre
-com psycopg 3 (extra ``psycopg``), sempre no modo ``PROPRIA`` e com autocommit
+com psycopg 3 (extra ``psycopg``), sempre no modo ``OWN`` e com autocommit
 desligado, e fecha a conexão ao fim de cada operação.
 """
 
@@ -11,35 +17,41 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from typing import Any
 
-from memory_lifecycle.connection import Conexao, ModoDeTransacao
-from memory_lifecycle.exceptions import ErroExtraNaoInstalado
+from memory_lifecycle.connection import Connection, TransactionMode
+from memory_lifecycle.exceptions import ExtraNotInstalledError
 
 
-class ProvedorDSN:
-    """Provedor de conexão por DSN; não use dentro de um request que já tem pool."""
+class DSNProvider:
+    """Connection provider by DSN; do not use inside a request that already has a pool.
 
-    modo_de_transacao = ModoDeTransacao.PROPRIA
+    PT: Provedor de conexão por DSN; não use dentro de um request que já tem pool.
+    """
 
-    def __init__(self, dsn: str, *, prazo_de_conexao: float = 10.0) -> None:
+    transaction_mode = TransactionMode.OWN
+
+    def __init__(self, dsn: str, *, connect_timeout: float = 10.0) -> None:
         try:
             import psycopg
-        except ModuleNotFoundError as erro:
-            if (erro.name or "").partition(".")[0] != "psycopg":
+        except ModuleNotFoundError as error:
+            if (error.name or "").partition(".")[0] != "psycopg":
                 raise
-            raise ErroExtraNaoInstalado(
-                'ProvedorDSN precisa do psycopg 3: pip install "memory-lifecycle[psycopg]"'
-            ) from erro
+            raise ExtraNotInstalledError(
+                'DSNProvider needs psycopg 3: pip install "memory-lifecycle[psycopg]"'
+            ) from error
         self._psycopg: Any = psycopg
         self._dsn = dsn
-        self._prazo = prazo_de_conexao
+        self._timeout = connect_timeout
 
     @contextmanager
-    def conexao(self) -> Iterator[Conexao]:
-        """Abre uma conexão nova com autocommit desligado e a fecha ao sair."""
-        conexao = self._psycopg.connect(
-            self._dsn, autocommit=False, connect_timeout=max(1, round(self._prazo))
+    def connection(self) -> Iterator[Connection]:
+        """Open a new connection with autocommit off and close it on exit.
+
+        PT: Abre uma conexão nova com autocommit desligado e a fecha ao sair.
+        """
+        connection = self._psycopg.connect(
+            self._dsn, autocommit=False, connect_timeout=max(1, round(self._timeout))
         )
         try:
-            yield conexao
+            yield connection
         finally:
-            conexao.close()
+            connection.close()

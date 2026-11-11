@@ -64,7 +64,7 @@ jobs:
           --health-retries 10
 
     env:
-      MEMORY_LIFECYCLE_DSN_TESTE: postgresql://memory:memory@localhost:5432/memory_lifecycle
+      MEMORY_LIFECYCLE_TEST_DSN: postgresql://memory:memory@localhost:5432/memory_lifecycle
 
     steps:
       - uses: actions/checkout@v4
